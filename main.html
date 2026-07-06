@@ -1459,6 +1459,13 @@
             textarea.focus();
         }
 
+        // Escapa texto de origem externa (ex: comentários importados de JSON) antes de inserir via innerHTML
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
         // Timeline Professional
         class TimelinePro {
             constructor(flowAnimator) {
@@ -1708,87 +1715,6 @@
                 return !(item1.startTime >= end2 || item2.startTime >= end1);
             }
 
-            createTimelineItem(item, track, index, layerIndex = 0, hasOverlap = false) {
-                const el = document.createElement('div');
-                el.className = 'timeline-item ' + item.type;
-                el.dataset.itemId = item.id;
-                el.dataset.trackId = track.id;
-                el.dataset.index = index;
-                el.dataset.layerIndex = layerIndex;
-                
-                if (hasOverlap) {
-                    el.classList.add('layer-overlap');
-                }
-                
-                const x = item.startTime * this.pixelsPerSecond * this.zoom;
-                const width = item.duration * this.pixelsPerSecond * this.zoom;
-                
-                el.style.left = x + 'px';
-                el.style.width = width + 'px';
-                
-                let title = '';
-                let icon = '';
-                if (item.type === 'draw') {
-                    title = 'Desenho ' + (index + 1);
-                    icon = '✏️';
-                } else if (item.type === 'erase') {
-                    title = 'Apagar ' + (index + 1);
-                    icon = '🧽';
-                } else if (item.type === 'comment') {
-                    title = (item.data.text || '').substring(0, 15) + '...';
-                    icon = '💬';
-                }
-                
-                // Criar tooltip informativo
-                const tooltipText = `${icon} ${title}\nTempo: ${item.startTime.toFixed(1)}s\nDuração: ${item.duration.toFixed(1)}s${hasOverlap ? '\nLayer: ' + (layerIndex + 1) : ''}`;
-                
-                el.innerHTML = `
-                    <div class="timeline-item-content">
-                        <div class="timeline-item-title">${icon} ${title}</div>
-                        <div class="timeline-item-duration">${item.duration.toFixed(1)}s</div>
-                    </div>
-                    <div class="timeline-item-resize left"></div>
-                    <div class="timeline-item-resize right"></div>
-                    <div class="timeline-item-delete" title="Deletar item">×</div>
-                    ${hasOverlap ? `<div class="timeline-item-overlap-indicator" title="Clique para ciclar items">${layerIndex + 1}</div>` : ''}
-                    <div class="timeline-item-tooltip">${tooltipText}</div>
-                    ${hasOverlap ? `
-                        <div class="timeline-layer-controls">
-                            <button class="layer-control-btn" title="Trazer para frente" data-action="front">↑</button>
-                            <button class="layer-control-btn" title="Enviar para trás" data-action="back">↓</button>
-                        </div>
-                    ` : ''}
-                `;
-                
-                // Event listeners
-                const deleteBtn = el.querySelector('.timeline-item-delete');
-                deleteBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.deleteTimelineItem(item);
-                });
-                
-                // Event listener para indicador de sobreposição (ciclar seleção)
-                const overlapIndicator = el.querySelector('.timeline-item-overlap-indicator');
-                if (overlapIndicator) {
-                    overlapIndicator.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        this.cycleOverlappingItems(item.startTime, track.id);
-                    });
-                }
-                
-                // Event listeners para controles de layer
-                const layerControls = el.querySelectorAll('.layer-control-btn');
-                layerControls.forEach(btn => {
-                    btn.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        const action = btn.dataset.action;
-                        this.moveItemLayer(item, action);
-                    });
-                });
-                
-                return el;
-            }
-
             // NOVA FUNÇÃO: Ciclar entre items sobrepostos
             cycleOverlappingItems(timePosition, trackId) {
                 const track = this.tracks.find(t => t.id === trackId);
@@ -1929,7 +1855,7 @@
                 } else if (item.type === 'erase') {
                     title = '🧽 Apagar ' + (index + 1);
                 } else if (item.type === 'comment') {
-                    title = '💬 ' + (item.data.text || '').substring(0, 20) + '...';
+                    title = '💬 ' + escapeHtml((item.data.text || '').substring(0, 20)) + '...';
                 }
                 
                 el.innerHTML = `
@@ -3422,56 +3348,6 @@
                     this.drawComment(comment);
                 }
             }
-        };
-
-        // NOVA FUNÇÃO: Apagar diretamente no canvas de desenhos (para animação)
-        FlowAnimator.prototype.eraseAnimatedPathOnCanvas = function(ctx, points, size, progress) {
-            if (!points || points.length < 1) return;
-            
-            ctx.save();
-            ctx.globalCompositeOperation = 'destination-out'; // Apagar SÓ do canvas de desenhos
-            ctx.strokeStyle = 'rgba(0,0,0,1)';
-            ctx.lineWidth = size;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            
-            if (points.length === 1) {
-                // Single point with fade-in effect
-                ctx.globalAlpha = progress;
-                ctx.beginPath();
-                ctx.arc(points[0].x, points[0].y, size / 2, 0, Math.PI * 2);
-                ctx.fill();
-            } else {
-                // Animated path erasing
-                const drawPoints = Math.max(1, Math.floor(points.length * progress));
-                
-                if (drawPoints > 0) {
-                    ctx.beginPath();
-                    ctx.moveTo(points[0].x, points[0].y);
-                    for (let i = 1; i < drawPoints; i++) {
-                        ctx.lineTo(points[i].x, points[i].y);
-                    }
-                    
-                    // Handle partial erasing of last segment
-                    if (drawPoints < points.length && progress < 1) {
-                        const lastIndex = drawPoints - 1;
-                        const nextIndex = drawPoints;
-                        const segmentProgress = (points.length * progress) - lastIndex;
-                        
-                        const lastPoint = points[lastIndex];
-                        const nextPoint = points[nextIndex];
-                        
-                        const partialX = lastPoint.x + (nextPoint.x - lastPoint.x) * segmentProgress;
-                        const partialY = lastPoint.y + (nextPoint.y - lastPoint.y) * segmentProgress;
-                        
-                        ctx.lineTo(partialX, partialY);
-                    }
-                    
-                    ctx.stroke();
-                }
-            }
-            
-            ctx.restore();
         };
 
         // MÉTODO UNIFICADO: Animar desenho ou apagamento num canvas
