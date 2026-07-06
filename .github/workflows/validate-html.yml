@@ -14,10 +14,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Run html-validate
-        run: npx --yes html-validate main.html
+        run: npx --yes html-validate main.html index.html
 
       - name: Check embedded JS syntax
         run: |
