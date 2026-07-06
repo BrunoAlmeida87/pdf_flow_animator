@@ -1,0 +1,16 @@
+# Artefatos gerados localmente ao usar/testar o app
+*.webm
+frame_*.png
+flow_animation_*.json
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Editores/IDEs
+.vscode/
+.idea/
+*.swp
+
+# Ferramentas (caso lint/CI local seja usado no futuro)
+node_modules/

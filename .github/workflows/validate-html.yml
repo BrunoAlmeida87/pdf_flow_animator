@@ -1,0 +1,31 @@
+name: Validate HTML
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  html-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run html-validate
+        run: npx --yes html-validate main.html
+
+      - name: Check embedded JS syntax
+        run: |
+          node -e "
+          const fs = require('fs');
+          const html = fs.readFileSync('main.html', 'utf8');
+          const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+          if (scripts.length === 0) throw new Error('Nenhum bloco <script> encontrado em main.html');
+          for (const s of scripts) new Function(s);
+          console.log('JS embutido: sintaxe OK (' + scripts.length + ' bloco(s))');
+          "
