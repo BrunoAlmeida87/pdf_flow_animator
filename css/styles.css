@@ -1,0 +1,1170 @@
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        /* Layout Principal */
+        .app-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            background: #2a2a2a;
+            border-bottom: 1px solid #3a3a3a;
+            padding: 10px 15px;
+            flex-shrink: 0;
+        }
+
+        .header-controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        /* Main Content Area */
+        .main-content {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Canvas Area */
+        .canvas-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #0a0a0a;
+        }
+
+        .canvas-header {
+            background: #1e1e1e;
+            padding: 8px 15px;
+            border-bottom: 1px solid #3a3a3a;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .canvas-viewport {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: radial-gradient(circle at center, #1a1a1a 0%, #0a0a0a 100%);
+        }
+
+        .canvas-wrapper {
+            position: relative;
+            overflow: auto;
+            max-width: 100%;
+            max-height: 100%;
+            background: #fff;
+            box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+            border-radius: 4px;
+        }
+
+        #canvas {
+            display: block;
+            cursor: crosshair;
+            position: relative;
+        }
+
+        /* Preview do cursor para pincel e apagador */
+        .brush-preview {
+            position: fixed;
+            border: 2px solid #4a90e2;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+            background: rgba(74, 144, 226, 0.1);
+        }
+
+        .eraser-preview {
+            position: fixed;
+            border: 2px solid #e74c3c;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+            background: rgba(231, 76, 60, 0.1);
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 300px;
+            background: #1e1e1e;
+            border-left: 1px solid #3a3a3a;
+            overflow-y: auto;
+            padding: 15px;
+            flex-shrink: 0;
+        }
+
+        /* Timeline Professional Area */
+        .timeline-area {
+            height: 300px;
+            background: #0a0a0a;
+            border-top: 2px solid #3a3a3a;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            position: relative;
+        }
+
+        .timeline-header {
+            background: #1e1e1e;
+            padding: 10px 15px;
+            border-bottom: 1px solid #3a3a3a;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .timeline-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .timeline-body {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        .timeline-tracks-panel {
+            width: 200px;
+            background: #1a1a1a;
+            border-right: 1px solid #3a3a3a;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+
+        .timeline-content-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .timeline-ruler {
+            height: 40px;
+            background: #2a2a2a;
+            border-bottom: 1px solid #3a3a3a;
+            position: relative;
+            overflow: hidden;
+            cursor: pointer;
+        }
+
+        .timeline-ruler-marks {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            width: 100%;
+        }
+
+        .timeline-scrollable {
+            flex: 1;
+            overflow: auto;
+            position: relative;
+            background: #0a0a0a;
+        }
+
+        .timeline-tracks-container {
+            min-height: 100%;
+            position: relative;
+        }
+
+        /* Track Styles */
+        .track-header {
+            height: 60px;
+            background: #1a1a1a;
+            border-bottom: 1px solid #2a2a2a;
+            padding: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .track-info {
+            flex: 1;
+        }
+
+        .track-name {
+            font-size: 12px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 2px;
+        }
+
+        .track-type {
+            font-size: 10px;
+            color: #888;
+        }
+
+        .track-controls {
+            display: flex;
+            gap: 5px;
+        }
+
+        .track-btn {
+            width: 24px;
+            height: 24px;
+            border: none;
+            background: #2a2a2a;
+            color: #888;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 10px;
+            transition: all 0.2s;
+        }
+
+        .track-btn:hover {
+            background: #3a3a3a;
+            color: #fff;
+        }
+
+        .track-btn.active {
+            background: #4a90e2;
+            color: #fff;
+        }
+
+        /* Timeline Tracks - MELHORADO para layers paralelas */
+        .timeline-track {
+            background: #1a1a1a;
+            border-bottom: 1px solid #2a2a2a;
+            position: relative;
+            min-height: 60px;
+        }
+
+        .timeline-track:hover {
+            background: #1e1e1e;
+        }
+
+        .timeline-track.has-parallels {
+            background: repeating-linear-gradient(
+                45deg,
+                #1a1a1a,
+                #1a1a1a 10px,
+                #1e1e1e 10px,
+                #1e1e1e 20px
+            );
+        }
+
+        /* Layers paralelas */
+        .timeline-layer {
+            position: absolute;
+            width: 100%;
+            height: 50px;
+            top: 0;
+        }
+
+        .timeline-layer.layer-0 { top: 5px; z-index: 10; }
+        .timeline-layer.layer-1 { top: 15px; z-index: 9; }
+        .timeline-layer.layer-2 { top: 25px; z-index: 8; }
+        .timeline-layer.layer-3 { top: 35px; z-index: 7; }
+        .timeline-layer.layer-4 { top: 45px; z-index: 6; }
+
+        /* Timeline Items com layers */
+
+        .timeline-item.layer-overlap {
+            height: 35px;
+            opacity: 0.85;
+        }
+
+        .timeline-item.layer-overlap:hover {
+            opacity: 1;
+            transform: translateY(-3px);
+            z-index: 100 !important;
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.6);
+        }
+
+        .timeline-item.selected {
+            outline: 2px solid #4a90e2;
+            outline-offset: 2px;
+            z-index: 200 !important;
+            opacity: 1;
+        }
+
+        /* Indicador de sobreposição */
+        .timeline-item-overlap-indicator {
+            position: absolute;
+            top: -3px;
+            right: 2px;
+            width: 12px;
+            height: 12px;
+            background: #27ae60;
+            border-radius: 50%;
+            font-size: 8px;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            border: 1px solid #fff;
+            cursor: pointer;
+        }
+
+        .timeline-item-overlap-indicator:hover {
+            background: #2ecc71;
+            transform: scale(1.2);
+        }
+
+        /* Tooltip para itens */
+        .timeline-item-tooltip {
+            position: absolute;
+            bottom: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            white-space: nowrap;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+        }
+
+        .timeline-item:hover .timeline-item-tooltip {
+            display: block;
+        }
+
+        /* Controles de layer */
+        .timeline-layer-controls {
+            position: absolute;
+            right: 5px;
+            top: 5px;
+            display: none;
+            gap: 2px;
+        }
+
+        .timeline-item:hover .timeline-layer-controls,
+        .timeline-item:focus-within .timeline-layer-controls {
+            display: flex;
+        }
+
+        .layer-control-btn {
+            width: 16px;
+            height: 16px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            border: none;
+            border-radius: 2px;
+            font-size: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .layer-control-btn:hover {
+            background: rgba(0, 0, 0, 0.9);
+        }
+
+        /* Track expandida para mostrar layers */
+        .timeline-track.expanded {
+            min-height: 120px;
+        }
+
+        .timeline-track.expanded .timeline-layer.layer-0 { top: 5px; }
+        .timeline-track.expanded .timeline-layer.layer-1 { top: 25px; }
+        .timeline-track.expanded .timeline-layer.layer-2 { top: 45px; }
+        .timeline-track.expanded .timeline-layer.layer-3 { top: 65px; }
+        .timeline-track.expanded .timeline-layer.layer-4 { top: 85px; }
+
+        /* Botão de expandir track */
+        .track-expand-btn {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 20px;
+            height: 20px;
+            background: #3a3a3a;
+            color: #aaa;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 10px;
+            display: none;
+        }
+
+        .track-header:hover .track-expand-btn,
+        .track-header:focus-within .track-expand-btn {
+            display: block;
+        }
+
+        .track-expand-btn:hover {
+            background: #4a90e2;
+            color: white;
+        }
+
+        .track-expand-btn.expanded {
+            background: #4a90e2;
+            color: white;
+        }
+
+        /* Destaque para ciclo de seleção */
+        .timeline-item.cycle-highlight {
+            animation: cycleFlash 0.5s ease-in-out;
+        }
+
+        @keyframes cycleFlash {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; transform: scale(1.05); }
+        }
+
+        @keyframes tripleClickWarn {
+            0%   { outline: 2px solid transparent; }
+            30%  { outline: 2px solid #f39c12; transform: scale(1.04); }
+            60%  { outline: 2px solid #e74c3c; transform: scale(1.06); }
+            100% { outline: 3px solid #e74c3c; background: rgba(231,76,60,0.35); transform: scale(1.0); }
+        }
+
+        .timeline-item.triple-warn {
+            animation: tripleClickWarn 0.35s ease forwards;
+        }
+
+        /* Timeline Items */
+        .timeline-item {
+            position: absolute;
+            height: 50px;
+            top: 5px;
+            border-radius: 4px;
+            cursor: move;
+            display: flex;
+            align-items: center;
+            padding: 5px 10px;
+            color: white;
+            font-size: 11px;
+            user-select: none;
+            transition: all 0.2s;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .timeline-item.draw {
+            background: linear-gradient(135deg, #4a90e2 0%, #357abd 100%);
+            border-left: 3px solid #2968a3;
+        }
+
+        .timeline-item.erase {
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+            border-left: 3px solid #a02920;
+        }
+
+        .timeline-item.comment {
+            background: linear-gradient(135deg, #f39c12 0%, #d68910 100%);
+            border-left: 3px solid #b8740c;
+        }
+
+        .timeline-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
+            z-index: 10;
+        }
+
+        .timeline-item.selected {
+            outline: 2px solid #4a90e2;
+            outline-offset: 2px;
+            z-index: 20;
+        }
+
+        .timeline-item-content {
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .timeline-item-title {
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .timeline-item-duration {
+            font-size: 9px;
+            opacity: 0.8;
+        }
+
+        .timeline-item-resize {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 5px;
+            cursor: ew-resize;
+            background: rgba(255, 255, 255, 0.1);
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .timeline-item-resize.left {
+            left: 0;
+            border-radius: 4px 0 0 4px;
+        }
+
+        .timeline-item-resize.right {
+            right: 0;
+            border-radius: 0 4px 4px 0;
+        }
+
+        .timeline-item:hover .timeline-item-resize,
+        .timeline-item:focus-within .timeline-item-resize {
+            opacity: 1;
+        }
+
+        /* Botão de deletar item da timeline */
+        .timeline-item-delete {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            width: 18px;
+            height: 18px;
+            background: #e74c3c;
+            color: white;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            font-size: 10px;
+            font-weight: bold;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 30;
+            transition: all 0.2s;
+        }
+
+        .timeline-item-delete:hover {
+            background: #c0392b;
+            transform: scale(1.2);
+        }
+
+        .timeline-item:hover .timeline-item-delete,
+        .timeline-item:focus-within .timeline-item-delete {
+            display: flex;
+        }
+
+        /* Comentário sendo posicionado */
+        .comment-positioning {
+            cursor: crosshair !important;
+        }
+
+        .comment-preview {
+            position: fixed;
+            background: rgba(255, 255, 255, 0.9);
+            border: 2px solid #f39c12;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+            max-width: 200px;
+            word-wrap: break-word;
+        }
+
+        .comment-positioning-help {
+            position: fixed;
+            bottom: 100px;
+            left: 20px;
+            background: rgba(243, 156, 18, 0.95);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            z-index: 1000;
+            display: none;
+            animation: fadeIn 0.3s ease;
+            box-shadow: 0 4px 12px rgba(243, 156, 18, 0.4);
+        }
+
+        .comment-positioning-help.show {
+            display: block;
+        }
+
+        /* Playhead */
+        .timeline-playhead {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #ff0000;
+            pointer-events: none;
+            z-index: 100;
+            transition: left 0.1s;
+        }
+
+        .timeline-playhead::before {
+            content: '';
+            position: absolute;
+            top: -6px;
+            left: -6px;
+            width: 0;
+            height: 0;
+            border-left: 7px solid transparent;
+            border-right: 7px solid transparent;
+            border-top: 12px solid #ff0000;
+        }
+
+        .timeline-tracks-container {
+            padding-top: 0px;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .btn-primary {
+            background: #4a90e2;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #357abd;
+        }
+
+        .btn-success {
+            background: #27ae60;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #219a52;
+        }
+
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c0392b;
+        }
+
+        .btn-warning {
+            background: #f39c12;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background: #d68910;
+        }
+
+        .btn-icon {
+            padding: 6px;
+            width: 32px;
+            height: 32px;
+            justify-content: center;
+        }
+
+        /* Mode Buttons */
+        .mode-selector {
+            display: flex;
+            background: #1a1a1a;
+            border-radius: 4px;
+            padding: 2px;
+            gap: 2px;
+        }
+
+        .mode-btn {
+            padding: 6px 12px;
+            border: none;
+            background: transparent;
+            color: #888;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 12px;
+        }
+
+        .mode-btn.active {
+            background: #4a90e2;
+            color: white;
+        }
+
+        /* Form Elements */
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #aaa;
+            font-weight: 500;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 8px;
+            background: #2a2a2a;
+            border: 1px solid #3a3a3a;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 12px;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: #4a90e2;
+            background: #333;
+        }
+
+        .slider {
+            width: 100%;
+            margin: 10px 0;
+        }
+
+        .color-picker {
+            width: 100%;
+            height: 40px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        /* Resize Handle */
+        .resize-handle-horizontal {
+            position: absolute;
+            top: 0;
+            width: 4px;
+            height: 100%;
+            background: #3a3a3a;
+            cursor: ew-resize;
+            transition: all 0.2s;
+        }
+
+        .resize-handle-horizontal:hover {
+            background: #4a90e2;
+        }
+
+        .resize-handle-vertical {
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: #3a3a3a;
+            cursor: ns-resize;
+            transition: all 0.2s;
+        }
+
+        .resize-handle-vertical:hover {
+            background: #4a90e2;
+        }
+
+        /* Status and Indicators */
+        .status-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #1a1a1a;
+            border-top: 1px solid #3a3a3a;
+            padding: 5px 15px;
+            font-size: 11px;
+            color: #888;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .recording-indicator {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 0, 0, 0.9);
+            color: white;
+            padding: 20px 40px;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            z-index: 10000;
+            display: none;
+            animation: pulse 1s infinite;
+        }
+
+        .straight-line-indicator {
+            position: fixed;
+            bottom: 60px;
+            left: 20px;
+            background: rgba(79, 172, 254, 0.95);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            gap: 10px;
+            animation: fadeIn 0.2s ease;
+            box-shadow: 0 4px 12px rgba(79, 172, 254, 0.4);
+        }
+
+        .straight-line-indicator.show { display: flex; }
+
+        .straight-line-indicator.snap-mode {
+            background: rgba(39, 174, 96, 0.95);
+            box-shadow: 0 4px 12px rgba(39, 174, 96, 0.4);
+        }
+
+        #angleDisplay {
+            font-family: monospace;
+            font-size: 14px;
+            font-weight: 700;
+            background: rgba(255,255,255,0.2);
+            padding: 2px 8px;
+            border-radius: 10px;
+            min-width: 44px;
+            text-align: center;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.9; }
+            50% { opacity: 1; }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .tooltip {
+            position: fixed;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 10000;
+            display: none;
+            max-width: 300px;
+        }
+
+        /* Scrollbars */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #3a3a3a;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4a4a4a;
+        }
+
+        /* Time Display */
+        .time-display {
+            background: #1a1a1a;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            color: #4a90e2;
+            border: 1px solid #3a3a3a;
+            min-width: 100px;
+            text-align: center;
+        }
+
+        /* Section Headers */
+        .section-header {
+            font-size: 14px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 10px;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #3a3a3a;
+        }
+
+        /* Ruler marks */
+        .ruler-mark {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background: #3a3a3a;
+            pointer-events: none;
+        }
+
+        .ruler-mark.major {
+            background: #4a4a4a;
+        }
+
+        .ruler-time {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 10px;
+            color: #888;
+            pointer-events: none;
+            padding-left: 5px;
+        }
+
+        /* Grid overlay for timeline */
+        .timeline-grid {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+            opacity: 0.1;
+        }
+
+        .grid-line {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background: #fff;
+        }
+
+        /* Sandbox Notice */
+        .sandbox-notice {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: rgba(243, 156, 18, 0.9);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+            z-index: 1000;
+            cursor: pointer;
+            display: none;
+        }
+
+        /* Emoji Picker */
+        .emoji-picker {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 4px;
+            border: 1px solid #3a3a3a;
+        }
+
+        .emoji-btn {
+            font-size: 20px;
+            cursor: pointer;
+            padding: 5px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .emoji-btn:hover {
+            background: #3a3a3a;
+            transform: scale(1.2);
+        }
+
+        /* Progress Bar */
+        .progress-bar {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            z-index: 10000;
+            display: none;
+            min-width: 300px;
+            text-align: center;
+        }
+
+        .progress-fill {
+            width: 100%;
+            height: 4px;
+            background: #3a3a3a;
+            border-radius: 2px;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+
+        .progress-fill-bar {
+            height: 100%;
+            background: #4a90e2;
+            transition: width 0.3s;
+        }
+
+        /* Timeline Mode */
+        .timeline-mode {
+            position: relative;
+        }
+        
+        .timeline-mode .canvas-area::before {
+            content: '🎬 MODO TIMELINE ATIVO';
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(79, 172, 254, 0.9);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            z-index: 100;
+            animation: pulse 2s infinite;
+        }
+
+        /* Parallel Track Indicators */
+        .track-parallel-indicator {
+            position: absolute;
+            right: 5px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #27ae60;
+            box-shadow: 0 0 6px rgba(39, 174, 96, 0.6);
+        }
+
+        .track-parallel-indicator.active {
+            animation: pulse 1s infinite;
+        }
+
+        /* Crop Region Overlay */
+        #cropOverlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 50;
+        }
+
+        .crop-active-indicator {
+            position: fixed;
+            bottom: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(39, 174, 96, 0.95);
+            color: white;
+            padding: 8px 18px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            z-index: 1000;
+            display: none;
+            gap: 10px;
+            align-items: center;
+            box-shadow: 0 4px 12px rgba(39, 174, 96, 0.4);
+        }
+        .crop-active-indicator.show { display: flex; }
+        .crop-active-indicator button {
+            background: rgba(255,255,255,0.25);
+            border: 1px solid rgba(255,255,255,0.5);
+            color: white;
+            padding: 2px 10px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .crop-active-indicator button:hover { background: rgba(255,255,255,0.4); }
+
+        /* Modais próprios (substituem confirm/alert/prompt nativos) */
+        .app-modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 20000;
+        }
+
+        .app-modal {
+            background: #1e1e1e;
+            border: 1px solid #3a3a3a;
+            border-radius: 8px;
+            padding: 20px;
+            min-width: 320px;
+            max-width: 480px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+        }
+
+        .app-modal-message {
+            color: #e0e0e0;
+            font-size: 14px;
+            line-height: 1.5;
+            margin-bottom: 15px;
+            white-space: pre-line;
+        }
+
+        .app-modal-input {
+            margin-bottom: 15px;
+        }
+
+        .app-modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        /* Foco visível para navegação por teclado */
+        .btn:focus-visible,
+        .mode-btn:focus-visible,
+        .track-btn:focus-visible,
+        .timeline-item:focus-visible,
+        .app-modal-input:focus-visible {
+            outline: 2px solid #4a90e2;
+            outline-offset: 2px;
+        }
+
+        @media (max-width: 1024px) {
+            .sidebar {
+                width: 250px;
+            }
+            
+            .timeline-tracks-panel {
+                width: 150px;
+            }
+            
+            .timeline-area {
+                height: 250px;
+            }
+        }

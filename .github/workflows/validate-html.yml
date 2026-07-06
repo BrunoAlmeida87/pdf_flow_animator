@@ -15,17 +15,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Run html-validate
-        run: npx --yes html-validate main.html index.html
+        run: npx html-validate main.html index.html
 
-      - name: Check embedded JS syntax
+      - name: Check JS syntax of extracted modules
         run: |
           node -e "
           const fs = require('fs');
-          const html = fs.readFileSync('main.html', 'utf8');
-          const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
-          if (scripts.length === 0) throw new Error('Nenhum bloco <script> encontrado em main.html');
-          for (const s of scripts) new Function(s);
-          console.log('JS embutido: sintaxe OK (' + scripts.length + ' bloco(s))');
+          const path = require('path');
+          const dir = 'js';
+          const files = fs.readdirSync(dir).filter(f => f.endsWith('.js'));
+          if (files.length === 0) throw new Error('Nenhum arquivo .js encontrado em js/');
+          for (const f of files) {
+            new Function(fs.readFileSync(path.join(dir, f), 'utf8'));
+            console.log(f + ': sintaxe OK');
+          }
           "
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        run: npx playwright test

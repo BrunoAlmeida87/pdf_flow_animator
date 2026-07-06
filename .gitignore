@@ -12,5 +12,8 @@ Thumbs.db
 .idea/
 *.swp
 
-# Ferramentas (caso lint/CI local seja usado no futuro)
+# Ferramentas de desenvolvimento (node_modules não é necessário para usar o app,
+# só para rodar testes/lint localmente — ver CONTRIBUTING.md)
 node_modules/
+test-results/
+playwright-report/

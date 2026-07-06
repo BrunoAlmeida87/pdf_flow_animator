@@ -2,7 +2,7 @@
 
 Ferramenta client-side (roda inteiramente no navegador, sem servidor e sem instalação) para anotar um PDF ou imagem com desenhos animados à mão livre, apagador, e comentários com tempo de aparição — organizados numa timeline profissional multi-track — e exportar o resultado como vídeo HD, sequência de frames PNG ou projeto JSON reeditável.
 
-Todo o app vive em um único arquivo: **[`main.html`](./main.html)**. Basta abrir esse arquivo em um navegador moderno.
+Abra **[`main.html`](./main.html)** em um navegador moderno para usar.
 
 🔗 **Demo publicada:** https://brunoalmeida87.github.io/pdf_flow_animator/
 
@@ -17,35 +17,47 @@ Todo o app vive em um único arquivo: **[`main.html`](./main.html)**. Basta abri
   - Detecção automática de ações simultâneas (sobrepostas no tempo) e organização visual em camadas.
   - Arrastar e redimensionar itens para reposicionar/ajustar duração diretamente na timeline.
   - Zoom, régua de tempo e playhead sincronizado com a reprodução.
+  - Itens da timeline são navegáveis por teclado (`Tab` para focar, `Delete`/`Backspace` para remover).
 - **Reprodução** com velocidade ajustável e opção de manter (ou não) os traços após a animação passar por eles.
-- **Desfazer / Refazer** (`Ctrl+Z` / `Ctrl+Y`), com histórico de até 50 estados.
+- **Desfazer / Refazer** (`Ctrl+Z` / `Ctrl+Y`), com histórico de até 30 estados.
 - **Seleção de região (crop)** do canvas para exportar apenas uma área específica em vídeo.
 - **Exportação**:
-  - Vídeo HD em `.webm` (via `MediaRecorder` + `canvas.captureStream`), com fallback automático para exportação de frames PNG em navegadores sem suporte a `MediaRecorder`.
+  - Vídeo HD via `MediaRecorder` + `canvas.captureStream` — tenta MP4/H.264 primeiro e cai para WebM (VP9/VP8) quando o navegador não suporta MP4 nesse contexto, com fallback automático para exportação de frames PNG quando `MediaRecorder` não está disponível.
   - Projeto completo em `.json` (e também salvamento rápido via `localStorage` do navegador).
+- **Interface em português ou inglês**, com seletor de idioma no header (persistido em `localStorage`).
 - **Atalhos de teclado**: `Espaço` play/pause · `D`/`E`/`C` trocar de modo · `Ctrl+Z`/`Ctrl+Y` desfazer/refazer · `Esc` cancelar posicionamento de comentário ou seleção de região.
 
 ## Como usar
 
-Não há build, dependências para instalar ou servidor para rodar:
+Não há build nem servidor para rodar o app em si:
 
 1. Baixe/clone o repositório.
 2. Abra `main.html` diretamente no navegador (duplo clique ou `Ctrl+O`).
 3. Importe um PDF ou imagem pelo botão "📁 Importar PDF/Imagem".
 
-**Requisitos do navegador**: qualquer navegador moderno com suporte a Canvas 2D. Para exportar vídeo é necessário suporte a `MediaRecorder` (Chrome, Edge, Firefox — quando ausente, o app oferece automaticamente a exportação por frames PNG). O carregamento de PDF depende de acesso à internet, pois a biblioteca PDF.js é carregada via CDN (veja [Limitações conhecidas](#limitações-conhecidas)).
+**Requisitos do navegador**: qualquer navegador moderno com suporte a Canvas 2D. Para exportar vídeo é necessário suporte a `MediaRecorder` (Chrome, Edge, Firefox — quando ausente, o app oferece automaticamente a exportação por frames PNG; suporte a MP4 dentro do `MediaRecorder` varia por navegador, sem garantia universal). O carregamento de PDF depende de acesso à internet, pois a biblioteca PDF.js é carregada via CDN (veja [Limitações conhecidas](#limitações-conhecidas)).
+
+(Instalar dependências via `npm` só é necessário para **desenvolver/testar** o projeto, não para usá-lo — veja [Contribuindo](#contribuindo).)
 
 ## Arquitetura
 
-Todo o HTML, CSS e JavaScript estão em `main.html` (sem bundler/build step). O JavaScript é organizado em duas estruturas principais, ambas definidas dentro do único bloco `<script>`:
+O projeto continua sem bundler/build step, mas agora é modular — HTML, CSS e JavaScript vivem em arquivos separados carregados via `<link>`/`<script src>` clássico (sem `type="module"`, para preservar o uso via `file://` sem servidor, já que ES modules são bloqueados por CORS nesse esquema):
 
-- **`FlowAnimator`** — objeto central da aplicação (função construtora + métodos em `prototype`, estilo pré-ES6). Responsável por:
-  - Dois canvases sobrepostos: um para o PDF/imagem de fundo (`ctx`) e outro só para os traços do usuário (`drawingCtx`) — assim apagar nunca destrói o fundo.
-  - Captura de desenho/apagador via eventos de mouse, incluindo o modo linha reta.
-  - Sistema de comentários (posicionamento, arrasto, estilo).
-  - Motor de animação (`renderAnimationFrame` → `renderParallelTracks`), que calcula o progresso de cada ação a partir de um tempo absoluto (`startTime`) e não de uma ordem sequencial, permitindo ações paralelas.
-  - Undo/redo, carregamento de PDF/imagem, exportação de vídeo/frames/JSON, persistência em `localStorage`.
-- **`TimelinePro`** — classe (ES6) responsável pela timeline multi-track: renderização de tracks e réguas, detecção de sobreposição de ações via *sweep-line* O(n log n), organização de itens sobrepostos em camadas visuais, drag/resize de itens (conversão pixel ↔ segundo), zoom e playhead.
+| Arquivo | Conteúdo |
+|---|---|
+| `main.html` | Markup (estrutura da UI) e as tags `<link>`/`<script src>` que carregam o resto. |
+| `css/styles.css` | Todo o CSS da interface. |
+| `js/i18n.js` | Dicionário pt-BR/inglês e `applyI18n()` — precisa carregar primeiro (aplica a tradução assim que o DOM carrega). |
+| `js/modal.js` | Modais próprios (`showConfirm`/`showAlertModal`/`showPromptModal`), substituindo `confirm()`/`alert()`/`prompt()` nativos. |
+| `js/timeline-pro.js` | `class TimelinePro` — timeline multi-track: renderização de tracks/régua, detecção de sobreposição via *sweep-line* O(n log n), organização de itens sobrepostos em camadas, drag/resize (pixel ↔ segundo), zoom, playhead. |
+| `js/flow-animator.js` | `function FlowAnimator` + `FlowAnimator.prototype.*` — núcleo do app: canvas duplo (fundo/PDF + desenho do usuário), captura de desenho/apagador, comentários, motor de animação por tempo absoluto, undo/redo, crop, exportação de vídeo/frames/JSON, PDF/imagem, `localStorage`. |
+| `js/main.js` | `escapeHtml`/`insertEmoji`, configuração do PDF.js, e a inicialização (`DOMContentLoaded`) que instancia o `FlowAnimator`. |
+
+Ordem de carregamento importa: `i18n.js` → `modal.js` → `timeline-pro.js` → `flow-animator.js` → `main.js` (o construtor de `FlowAnimator` instancia `new TimelinePro(this)`, então `TimelinePro` precisa existir primeiro).
+
+Pontos-chave de comportamento (ver também [CLAUDE.md](./CLAUDE.md)):
+- Dois canvases sobrepostos: um para o PDF/imagem de fundo (`ctx`) e outro só para os traços do usuário (`drawingCtx`) — assim apagar nunca destrói o fundo.
+- O motor de animação (`renderAnimationFrame` → `renderParallelTracks`) calcula o progresso de cada ação a partir de um tempo absoluto (`startTime`), não de uma ordem sequencial, permitindo ações paralelas.
 
 ### Formato dos dados (JSON exportado / `localStorage`)
 
@@ -77,33 +89,20 @@ Todo o HTML, CSS e JavaScript estão em `main.html` (sem bundler/build step). O 
 }
 ```
 
+## Testes
+
+Há uma suíte automatizada com [Playwright](https://playwright.dev/) cobrindo desenhar, apagar, comentar, undo/redo e uma regressão do fix de XSS via importação de JSON. Ver [Contribuindo](#contribuindo) para como rodar.
+
 ## Limitações conhecidas
 
-- **Arquivo único de ~5.000 linhas**: não há separação em módulos, o que dificulta lint, testes e revisão de diffs.
-- **Sem suíte de testes automatizados.**
-- **Dependência externa via CDN sem verificação de integridade**: o PDF.js é carregado de `cdnjs.cloudflare.com` sem hash de Subresource Integrity (SRI) e sem fallback local — sem internet, a importação de PDF não funciona (imagens continuam funcionando normalmente).
-- **UI inteiramente em português (pt-BR)**, sem suporte a internacionalização.
-- **Uso de `confirm()`/`alert()`/`prompt()`** nativos do navegador para algumas confirmações, o que é uma UX datada e dificulta testes automatizados.
-- **Exportação de vídeo apenas em WebM** (sem opção nativa de MP4/H.264).
-- **Acessibilidade limitada**: vários controles da timeline só aparecem em `:hover`, sem alternativa por teclado.
-
-## Melhorias propostas
-
-Lista priorizada de melhorias identificadas na revisão do código, para futuras contribuições:
-
-1. Modularizar o arquivo único em HTML/CSS/JS separados (ou ES modules), permitindo lint, testes e diffs menores.
-2. Adicionar suíte de testes automatizados (ex.: Playwright cobrindo desenhar, exportar, undo/redo), já que hoje não há nenhum teste.
-3. Adicionar Subresource Integrity (SRI) nos `<script>` do PDF.js e/ou vendorizar a biblioteca localmente, reduzindo o risco de supply-chain e a dependência de um CDN externo.
-4. Substituir `confirm()`/`alert()`/`prompt()` por componentes de UI próprios (modais), mais acessíveis e testáveis.
-5. Adicionar acessibilidade básica: ARIA labels, navegação por teclado nos itens da timeline, alternativas a affordances que hoje só aparecem no hover.
-6. Internacionalização (i18n) da interface, hoje fixa em pt-BR, para ampliar o número de contribuidores.
-7. Suporte a exportação em MP4/H.264 além de WebM.
-8. Revisar o crescimento de memória da pilha de undo/redo em sessões longas com muitos pontos de desenho.
-9. Tornar a detecção de fim da exportação de vídeo baseada em evento/Promise em vez de polling via `setInterval`.
+- **Dependência externa via CDN sem verificação de integridade**: o PDF.js é carregado de `cdnjs.cloudflare.com` sem hash de Subresource Integrity (SRI) e sem fallback local — sem internet, a importação de PDF não funciona (imagens continuam funcionando normalmente). **Não implementado nesta rodada**: o ambiente de desenvolvimento usado bloqueia rede para esse domínio, então não foi possível baixar o arquivo real para gerar um hash SRI verificado nem vendorizá-lo localmente — inventar um hash não verificado quebraria o carregamento de PDF para todo mundo caso não bata exatamente. Para completar isso: baixe `pdf.min.js`/`pdf.worker.min.js` da versão usada (3.11.174) e gere o hash com `openssl dgst -sha384 -binary pdf.min.js | openssl base64 -A`, adicionando `integrity="sha384-..."` e `crossorigin="anonymous"` na tag `<script>` em `main.html` — ou vendorize os arquivos em `vendor/pdfjs/` e aponte o `src` para lá.
+- **i18n cobre a UI estática** (botões, labels, headers de seção), mas não 100% das strings dinâmicas interpoladas (tooltips com valores, mensagens de status) — essas continuam só em pt-BR.
+- **Suporte a MP4 no `MediaRecorder` varia por navegador** — quando indisponível, a exportação cai automaticamente para WebM; não há transcodificação embutida (tipo ffmpeg.wasm) neste escopo.
+- **`node_modules`/Playwright são só para desenvolvimento** — usar o app não requer Node/npm em nenhum momento.
 
 ## Contribuindo
 
-Veja [CONTRIBUTING.md](./CONTRIBUTING.md) para como testar localmente e o processo de contribuição.
+Veja [CONTRIBUTING.md](./CONTRIBUTING.md) para como rodar os testes localmente e o processo de contribuição.
 
 ## Licença
 
