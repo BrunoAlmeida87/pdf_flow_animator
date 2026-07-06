@@ -13,6 +13,18 @@ function _removeModal(overlay) {
     if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
 }
 
+// Intercepta teclas na fase de captura do document e impede a propagação para a fase de
+// bubble, onde vivem os atalhos globais do app (Espaço = play/pause, Esc = reset, etc.) —
+// sem isso, Esc/Espaço num modal aberto também acionavam esses atalhos por baixo dele.
+function _trapKeydown(handler) {
+    const onKeydown = (e) => {
+        e.stopPropagation();
+        handler(e);
+    };
+    document.addEventListener('keydown', onKeydown, true);
+    return () => document.removeEventListener('keydown', onKeydown, true);
+}
+
 function showConfirm(message) {
     return new Promise((resolve) => {
         const overlay = _createModalOverlay(`
@@ -24,20 +36,19 @@ function showConfirm(message) {
         `);
 
         const finish = (result) => {
-            document.removeEventListener('keydown', onKeydown);
+            untrap();
             _removeModal(overlay);
             resolve(result);
         };
 
-        const onKeydown = (e) => {
+        const untrap = _trapKeydown((e) => {
             if (e.key === 'Escape') finish(false);
             if (e.key === 'Enter') finish(true);
-        };
+        });
 
         overlay.querySelector('[data-action="ok"]').addEventListener('click', () => finish(true));
         overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => finish(false));
         overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false); });
-        document.addEventListener('keydown', onKeydown);
         overlay.querySelector('[data-action="ok"]').focus();
     });
 }
@@ -52,18 +63,17 @@ function showAlertModal(message) {
         `);
 
         const finish = () => {
-            document.removeEventListener('keydown', onKeydown);
+            untrap();
             _removeModal(overlay);
             resolve();
         };
 
-        const onKeydown = (e) => {
+        const untrap = _trapKeydown((e) => {
             if (e.key === 'Escape' || e.key === 'Enter') finish();
-        };
+        });
 
         overlay.querySelector('[data-action="ok"]').addEventListener('click', finish);
         overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(); });
-        document.addEventListener('keydown', onKeydown);
         overlay.querySelector('[data-action="ok"]').focus();
     });
 }
@@ -82,20 +92,19 @@ function showPromptModal(message, defaultValue) {
         const input = overlay.querySelector('.app-modal-input');
 
         const finish = (result) => {
-            document.removeEventListener('keydown', onKeydown);
+            untrap();
             _removeModal(overlay);
             resolve(result);
         };
 
-        const onKeydown = (e) => {
+        const untrap = _trapKeydown((e) => {
             if (e.key === 'Escape') finish(null);
             if (e.key === 'Enter') finish(input.value);
-        };
+        });
 
         overlay.querySelector('[data-action="ok"]').addEventListener('click', () => finish(input.value));
         overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => finish(null));
         overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
-        document.addEventListener('keydown', onKeydown);
         input.focus();
         input.select();
     });

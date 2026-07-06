@@ -148,3 +148,53 @@ test('importar JSON com comentário malicioso não executa script (regressão do
 
     fs.unlinkSync(jsonPath);
 });
+
+test('Esc num modal de confirmação não vaza para os atalhos globais do app (regressão)', async ({ page }) => {
+    await gotoApp(page);
+
+    // "Limpar Tudo" só mostra o modal de confirmação se houver algo para limpar.
+    const canvas = page.locator('#canvas');
+    const box = await canvas.boundingBox();
+    await page.mouse.move(box.x + 50, box.y + 50);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 150, box.y + 150, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    // Avança o playhead manualmente para um valor não-zero, sem usar play() (evita depender de timing).
+    await page.evaluate(() => {
+        window.flowAnimator.animationProgress = 0.5;
+        window.flowAnimator.renderAnimationFrame();
+    });
+
+    // Abre o modal de confirmação (Limpar Tudo) e confirma que apareceu.
+    await page.click('#clearBtn');
+    await expect(page.locator('.app-modal-overlay')).toBeVisible();
+
+    // Esc deveria só cancelar o modal — não disparar o atalho global de Esc (que chama reset()
+    // e zeraria animationProgress). Se vazasse, o valor abaixo seria 0 em vez de 0.5.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+
+    await expect(page.locator('.app-modal-overlay')).toHaveCount(0);
+    const progressAfterEsc = await page.evaluate(() => window.flowAnimator.animationProgress);
+    expect(progressAfterEsc).toBe(0.5);
+});
+
+test('trocar idioma com um arquivo carregado não reseta o nome do arquivo (regressão)', async ({ page }) => {
+    await gotoApp(page);
+
+    // Simula um arquivo carregado sem depender de PDF.js real (stubado neste ambiente de teste).
+    await page.evaluate(() => {
+        window.flowAnimator.isImage = true;
+        document.getElementById('fileName').textContent = 'diagrama-exemplo.png';
+    });
+
+    await page.selectOption('#langSelect', 'en');
+    await page.waitForTimeout(100);
+    await expect(page.locator('#fileName')).toHaveText('diagrama-exemplo.png');
+
+    await page.selectOption('#langSelect', 'pt-BR');
+    await page.waitForTimeout(100);
+    await expect(page.locator('#fileName')).toHaveText('diagrama-exemplo.png');
+});

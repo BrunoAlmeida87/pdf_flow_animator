@@ -87,9 +87,17 @@ function applyI18n(lang) {
     const dict = I18N[lang] || I18N['pt-BR'];
     document.querySelectorAll('[data-i18n]').forEach((el) => {
         const key = el.dataset.i18n;
-        if (dict[key] !== undefined) {
-            el.textContent = dict[key];
+        if (dict[key] === undefined) return;
+
+        // #fileName é reescrito dinamicamente pelo FlowAnimator (nome do arquivo, "Carregando...",
+        // título/página do PDF) — só aplicamos a tradução do estado vazio se nada estiver carregado,
+        // senão a troca de idioma apagaria o nome do arquivo em exibição.
+        if (key === 'noFileLoaded') {
+            const hasFileLoaded = window.flowAnimator && (window.flowAnimator.pdfDoc || window.flowAnimator.isImage);
+            if (hasFileLoaded) return;
         }
+
+        el.textContent = dict[key];
     });
 }
 
