@@ -17,7 +17,7 @@ jobs:
           node-version: "20"
 
       - name: Run html-validate
-        run: npx --yes html-validate main.html
+        run: npx --yes html-validate main.html index.html
 
       - name: Check embedded JS syntax
         run: |

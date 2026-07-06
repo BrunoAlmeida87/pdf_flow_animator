@@ -4,6 +4,8 @@ Ferramenta client-side (roda inteiramente no navegador, sem servidor e sem insta
 
 Todo o app vive em um único arquivo: **[`main.html`](./main.html)**. Basta abrir esse arquivo em um navegador moderno.
 
+🔗 **Demo publicada:** https://brunoalmeida87.github.io/pdf_flow_animator/
+
 ## Funcionalidades
 
 - **Importação** de PDF (renderizado página a página via [PDF.js](https://mozilla.github.io/pdf.js/)) ou imagem (`.jpg`, `.jpeg`, `.png`).
