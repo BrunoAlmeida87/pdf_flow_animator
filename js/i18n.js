@@ -93,14 +93,32 @@ function applyI18n(lang) {
     });
 }
 
+// localStorage pode lançar (modo sandbox/privado em alguns navegadores) — mesma
+// cautela usada em FlowAnimator.prototype.checkLocalStorage.
+function _getSavedLang() {
+    try {
+        return localStorage.getItem(I18N_STORAGE_KEY);
+    } catch (e) {
+        return null;
+    }
+}
+
+function _saveLang(lang) {
+    try {
+        localStorage.setItem(I18N_STORAGE_KEY, lang);
+    } catch (e) {
+        // Sem persistência disponível — a tradução ainda é aplicada nesta sessão.
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-    const savedLang = localStorage.getItem(I18N_STORAGE_KEY) || 'pt-BR';
+    const savedLang = _getSavedLang() || 'pt-BR';
     const langSelect = document.getElementById('langSelect');
     if (langSelect) {
         langSelect.value = savedLang;
         langSelect.addEventListener('change', (e) => {
             const lang = e.target.value;
-            localStorage.setItem(I18N_STORAGE_KEY, lang);
+            _saveLang(lang);
             applyI18n(lang);
         });
     }
