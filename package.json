@@ -1,0 +1,14 @@
+{
+  "name": "pdf-flow-animator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ferramenta client-side para animar fluxos desenhados sobre PDFs/imagens. Ver main.html — este package.json existe só para as ferramentas de desenvolvimento (testes, lint), não é necessário para usar o app.",
+  "scripts": {
+    "test": "playwright test",
+    "lint:html": "html-validate main.html index.html"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "html-validate": "^11.5.5"
+  }
+}
