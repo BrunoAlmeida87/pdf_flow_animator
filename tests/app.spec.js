@@ -499,3 +499,40 @@ test('setas movem item focado da timeline e mantêm o foco', async ({ page }) =>
     const focusedIsItem = await page.evaluate(() => document.activeElement.classList.contains('timeline-item'));
     expect(focusedIsItem).toBe(true);
 });
+
+test('reimportar projeto com mesma assinatura de timeline atualiza DOM e delete funciona (regressão)', async ({ page }) => {
+    await gotoApp(page);
+
+    // Comentário "Antes" em 0s/3s — assinatura da timeline: comment_0,0,3
+    const projA = {
+        actions: [],
+        comments: [{ x: 200, y: 200, text: 'Antes', time: 0, duration: 3,
+            textColor: '#333333', bgColor: '#ffffff', borderColor: '#f39c12',
+            fontFamily: 'Arial', fontSize: 16, opacity: 0.9 }],
+        settings: { animationSpeed: 1, totalAnimationTime: 10, persistPaths: true },
+        version: '1.2'
+    };
+    // Mesmo id/tempo/duração, mas OUTRO objeto com texto diferente
+    const projB = JSON.parse(JSON.stringify(projA));
+    projB.comments[0].text = 'Depois';
+
+    await page.evaluate((p) => window.flowAnimator.loadDataFromObject(p), projA);
+    await page.waitForTimeout(150);
+    await expect(page.locator('.timeline-item-title')).toContainText('Antes');
+
+    await page.evaluate((p) => window.flowAnimator.loadDataFromObject(p), projB);
+    await page.waitForTimeout(150);
+    // Sem o fix: assinatura idêntica → DOM antigo mantido → título ainda "Antes"
+    await expect(page.locator('.timeline-item-title')).toContainText('Depois');
+
+    // E o delete precisa agir sobre o objeto NOVO (indexOf(item.data) não pode virar no-op).
+    // Usa foco + tecla Delete (o botão × só fica visível no hover) — mesmo caminho de código.
+    await page.locator('.timeline-item.comment').first().focus();
+    await page.keyboard.press('Delete');
+    await page.waitForTimeout(200);
+    await page.click('.app-modal-overlay [data-action="ok"]');
+    await page.waitForTimeout(200);
+    await expect(page.locator('#commentCount')).toHaveText('0');
+    const commentsLeft = await page.evaluate(() => window.flowAnimator.comments.length);
+    expect(commentsLeft).toBe(0);
+});
