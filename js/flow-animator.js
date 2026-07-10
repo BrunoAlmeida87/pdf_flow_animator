@@ -1854,12 +1854,13 @@
             this.timelineMode = true;
             document.body.classList.add('timeline-mode');
 
-            // Piso do cursor: a agulha atual ou o fim do conteúdo existente, o que for
-            // maior. O início de cada traço é derivado disto + do conteúdo real
-            // (_nextRecordStart), para não sobrescrever o que já existe e para que
-            // undo/deleção reposicionem o cursor automaticamente.
-            this._recordFloor = Math.max(this.animationProgress * this.totalAnimationTime, this._lastContentEnd());
-            this._recordCursor = this._recordFloor;
+            // Piso do cursor = SÓ o offset do playhead escolhido pelo usuário. O fim do
+            // conteúdo existente NÃO é gravado aqui (senão limpar/deletar esse conteúdo
+            // dentro do modo deixaria um piso obsoleto e reabriria o vão) — ele entra
+            // dinamicamente via _lastContentEnd() dentro de _nextRecordStart().
+            this._recordFloor = this.animationProgress * this.totalAnimationTime;
+            // Agulha começa após o conteúdo existente (ou no offset, o que for maior).
+            this._recordCursor = this._nextRecordStart();
             this._seekNeedle(this._recordCursor);
             this._startRecordClock(this._recordCursor);
 

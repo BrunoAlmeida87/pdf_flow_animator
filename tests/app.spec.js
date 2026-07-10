@@ -392,6 +392,42 @@ test('modo timeline: undo de um traço reposiciona o cursor de gravação (sem e
     await page.evaluate(() => window.flowAnimator.exitTimelineMode());
 });
 
+test('modo timeline: limpar conteúdo pré-existente não deixa piso de gravação obsoleto (regressão)', async ({ page }) => {
+    await gotoApp(page);
+
+    // Conteúdo que termina em 5s, criado ANTES de entrar no modo; agulha fica em 0.
+    await page.evaluate(() => {
+        const fa = window.flowAnimator;
+        fa.actions.push({ type: 'draw', points: [{ x: 10, y: 10 }, { x: 50, y: 50 }], color: '#f00', width: 3, startTime: 3, duration: 2 });
+        fa.timeline.refresh();
+        fa.animationProgress = 0;
+        fa.enterTimelineMode();
+    });
+
+    // Remove todo o conteúdo estando ainda no modo gravação.
+    await page.evaluate(() => {
+        const fa = window.flowAnimator;
+        fa.actions.length = 0;
+        fa.comments.length = 0;
+        fa.rebuildDrawingCanvas();
+        fa.timeline.refresh();
+    });
+
+    // Grava um traço — deve começar em 0, não no fim (5s) do conteúdo que foi removido.
+    const box = await page.locator('#canvas').boundingBox();
+    await page.mouse.move(box.x + 40, box.y + 40);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 120, box.y + 120, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+
+    const start = await page.evaluate(() => window.flowAnimator.actions[0].startTime);
+    // Regressão: com o piso gravando o fim do conteúdo, isto seria 5 (vão em branco de 0–5s)
+    expect(start).toBe(0);
+
+    await page.evaluate(() => window.flowAnimator.exitTimelineMode());
+});
+
 test('posicionar comentário em modo apagar não cria ação-fantasma', async ({ page }) => {
     await gotoApp(page);
 
