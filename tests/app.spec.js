@@ -456,6 +456,33 @@ test('modo timeline: a agulha não avança sozinha quando ocioso (regressão)', 
     await page.evaluate(() => window.flowAnimator.exitTimelineMode());
 });
 
+test('modo timeline: undo/deleção reancoram a agulha ociosa no próximo início (regressão)', async ({ page }) => {
+    await gotoApp(page);
+
+    const box = await page.locator('#canvas').boundingBox();
+    await page.evaluate(() => window.flowAnimator.enterTimelineMode());
+
+    // Desenha um traço → agulha para no fim dele (> 0)
+    await page.mouse.move(box.x + 40, box.y + 40);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 120, box.y + 120, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(80);
+    const afterDraw = await page.evaluate(() => window.flowAnimator.animationProgress);
+    expect(afterDraw).toBeGreaterThan(0);
+
+    // Undo estando OCIOSO (sem novo mousedown): a agulha deve voltar sozinha para 0,
+    // pois _nextRecordStart() virou 0. Antes do fix ela ficava presa no fim do traço apagado.
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await page.keyboard.press('Control+z');
+    await page.waitForTimeout(100);
+    expect(await page.evaluate(() => window.flowAnimator.actions.length)).toBe(0);
+    const afterUndo = await page.evaluate(() => window.flowAnimator.animationProgress);
+    expect(afterUndo).toBe(0);
+
+    await page.evaluate(() => window.flowAnimator.exitTimelineMode());
+});
+
 test('posicionar comentário em modo apagar não cria ação-fantasma', async ({ page }) => {
     await gotoApp(page);
 
