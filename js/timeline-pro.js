@@ -178,8 +178,23 @@
                     `${t.id}:${t.visible}:${t.expanded ? 1 : 0}:` +
                     t.items.map(i => `${i.id},${i.startTime},${i.duration}`).join(';')
                 ).join('||');
-                if (signature === this._lastTracksSignature) return;
+
+                // Além da assinatura textual, comparar a IDENTIDADE dos objetos: import,
+                // loadDataFromObject e undo/redo SUBSTITUEM actions/comments por objetos
+                // novos — com a mesma assinatura, o DOM antigo continuaria com handlers
+                // fechando sobre os objetos antigos (delete via indexOf(item.data) viraria
+                // no-op, e texto de comentário poderia ficar desatualizado).
+                const itemDatas = [];
+                for (const t of this.tracks) {
+                    for (const i of t.items) itemDatas.push(i.data);
+                }
+                const sameRefs = this._lastItemDatas !== undefined &&
+                    itemDatas.length === this._lastItemDatas.length &&
+                    itemDatas.every((d, idx) => d === this._lastItemDatas[idx]);
+
+                if (signature === this._lastTracksSignature && sameRefs) return;
                 this._lastTracksSignature = signature;
+                this._lastItemDatas = itemDatas;
 
                 container.innerHTML = '';
 
