@@ -44,6 +44,14 @@
             this.isPositioningComment = false;
             this.commentPreview = document.createElement('div');
             this.commentPreview.className = 'comment-preview';
+
+            // Modo Timeline (gravação): a agulha corre em tempo real e cada traço é
+            // gravado sequencialmente, logo após o fim do anterior (ver enterTimelineMode).
+            this.timelineMode = false;
+            this._recordCursor = 0;       // tempo (s) onde o próximo traço começa
+            this._recordBase = 0;         // posição (s) da agulha no instante _recordClockRef
+            this._recordClockRef = 0;     // Date.now() de referência do relógio de gravação
+            this._recordRAF = null;       // id do requestAnimationFrame do relógio
             
             // Straight line mode
             this.isAltPressed   = false;
@@ -796,7 +804,14 @@
             const pos = this.getMousePos(e);
             this.currentPath = [pos];
             this.drawStartTime = Date.now();
-            
+
+            // Modo gravação: a agulha "pula" para o cursor (fim do último traço) e o
+            // relógio recomeça dali, para o novo traço ser gravado logo após o anterior.
+            if (this.timelineMode) {
+                this._startRecordClock(this._recordCursor);
+                this._seekNeedle(this._recordCursor);
+            }
+
             // Straight line mode: Alt = livre, Shift = snap 45°
             if (this.isAltPressed || this.isShiftPressed) {
                 this.isDrawingStraightLine = true;
@@ -858,31 +873,55 @@
             }
             
             this.isDrawing = false;
-            
-            const duration = (Date.now() - this.drawStartTime) / 1000;
-            
-            // NOVO: Calcular tempo de início baseado na posição atual da timeline
-            const startTime = this.animationProgress * this.totalAnimationTime;
-            
+
+            const drawnSeconds = (Date.now() - this.drawStartTime) / 1000;
+
+            // Tempo de início e duração dependem do modo:
+            // - Gravação (timelineMode): sequencial — começa no cursor (fim do traço
+            //   anterior) e dura o tempo real de desenho (playback fiel ao ritmo).
+            // - Normal: começa na posição atual da agulha; duração comprimida (×0.5).
+            let startTime, finalDuration;
+            if (this.timelineMode) {
+                startTime = this._recordCursor;
+                finalDuration = Math.max(0.5, Math.min(drawnSeconds, 15));
+            } else {
+                startTime = this.animationProgress * this.totalAnimationTime;
+                finalDuration = Math.max(0.5, Math.min(drawnSeconds * 0.5, 10));
+            }
+
             this.saveUndoState(); // snapshot antes de adicionar ação
-            
+
             this.actions.push({
                 type: this.mode,
                 points: [...this.currentPath],
                 color: this.flowColor,
                 width: this.lineWidth,
                 size: this.eraseSize,
-                duration: Math.max(0.5, Math.min(duration * 0.5, 10)),
+                duration: finalDuration,
                 startTime: startTime, // TEMPO ABSOLUTO, não sequencial
                 timestamp: Date.now()
             });
-            
+
+            if (this.timelineMode) {
+                // Avança o cursor para o fim deste traço e estende a duração total se
+                // o conteúdo passou do fim, para não ficar fora da faixa reproduzível.
+                this._recordCursor = startTime + finalDuration;
+                if (this._recordCursor > this.totalAnimationTime) {
+                    this.totalAnimationTime = Math.ceil(this._recordCursor + 2);
+                    const totalInput = document.getElementById('totalDuration');
+                    if (totalInput) totalInput.value = this.totalAnimationTime;
+                }
+                // Relógio segue do novo cursor (a agulha continua a andar durante a pausa).
+                this._startRecordClock(this._recordCursor);
+                this._seekNeedle(this._recordCursor);
+            }
+
             this.currentPath = [];
             this.isDrawingStraightLine = false;
             this.straightLineStart     = null;
             this._lastSnapAngle        = null;
             this._lastFreeAngle        = null;
-            
+
             // Redesenhar tudo após adicionar a ação
             this.rebuildDrawingCanvas();
             this.redrawMainCanvas();
@@ -1742,11 +1781,72 @@
             }
         };
 
-        // NOVA FUNÇÃO: Modo Timeline (para edição precisa)
+        // Tempo (s) em que o último conteúdo (ação ou comentário) termina. Serve de
+        // ponto de partida do cursor de gravação para não sobrescrever o que já existe.
+        FlowAnimator.prototype._lastContentEnd = function() {
+            let end = 0;
+            for (const a of this.actions) {
+                end = Math.max(end, (a.startTime || 0) + (a.duration || 0));
+            }
+            for (const c of this.comments) {
+                end = Math.max(end, (c.time || 0) + (c.duration || 0));
+            }
+            return end;
+        };
+
+        // Posiciona a agulha (animationProgress) num tempo absoluto em segundos, sem tocar
+        // no canvas — só move o playhead da timeline e atualiza os displays de tempo.
+        FlowAnimator.prototype._seekNeedle = function(seconds) {
+            const clamped = Math.max(0, Math.min(seconds, this.totalAnimationTime));
+            this.animationProgress = this.totalAnimationTime > 0 ? clamped / this.totalAnimationTime : 0;
+            this.timeline.updatePlayhead();
+            this.updateTimeDisplay();
+        };
+
+        // Relógio de gravação: um loop de rAF que faz a agulha correr em tempo real
+        // (1 s de relógio = 1 s na timeline). Só move o playhead — nunca re-renderiza o
+        // canvas — então convive sem conflito com o desenho ao vivo (redrawWithCurrentPath).
+        // `baseSeconds` é a posição da agulha no instante em que o relógio (re)começa.
+        FlowAnimator.prototype._startRecordClock = function(baseSeconds) {
+            this._recordBase = baseSeconds;
+            this._recordClockRef = Date.now();
+            if (this._recordRAF) cancelAnimationFrame(this._recordRAF);
+
+            const tick = () => {
+                if (!this.timelineMode) { this._recordRAF = null; return; }
+                if (this.isPlaying) {
+                    // Durante o play(), o loop animate() é dono da agulha; só mantemos o
+                    // relógio sincronizado para retomar suave quando a reprodução parar.
+                    this._recordBase = this.animationProgress * this.totalAnimationTime;
+                    this._recordClockRef = Date.now();
+                } else {
+                    const elapsed = (Date.now() - this._recordClockRef) / 1000;
+                    this._seekNeedle(this._recordBase + elapsed);
+                }
+                this._recordRAF = requestAnimationFrame(tick);
+            };
+            this._recordRAF = requestAnimationFrame(tick);
+        };
+
+        FlowAnimator.prototype._stopRecordClock = function() {
+            if (this._recordRAF) cancelAnimationFrame(this._recordRAF);
+            this._recordRAF = null;
+        };
+
+        // Modo Timeline = modo de GRAVAÇÃO: ao ativar, um relógio começa a correr e a
+        // agulha de edição anda. Cada traço desenhado é gravado sequencialmente, logo
+        // após o fim do anterior (ver startDrawing/stopDrawing) — pausas para pensar não
+        // viram espaços vazios na reprodução.
         FlowAnimator.prototype.enterTimelineMode = function() {
             this.timelineMode = true;
             document.body.classList.add('timeline-mode');
-            
+
+            // Cursor de gravação começa no fim do conteúdo existente (ou na agulha atual,
+            // o que for maior) para não sobrescrever ações/comentários já criados.
+            this._recordCursor = Math.max(this.animationProgress * this.totalAnimationTime, this._lastContentEnd());
+            this._seekNeedle(this._recordCursor);
+            this._startRecordClock(this._recordCursor);
+
             // Mostrar overlay com instruções
             const overlay = document.createElement('div');
             overlay.id = 'timelineModeOverlay';
@@ -1755,7 +1855,7 @@
                 background: rgba(79, 172, 254, 0.1); z-index: 1000;
                 pointer-events: none; border: 3px solid #4facfe;
             `;
-            
+
             const instructions = document.createElement('div');
             instructions.style.cssText = `
                 position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
@@ -1764,11 +1864,11 @@
                 box-shadow: 0 4px 15px rgba(79, 172, 254, 0.4);
                 animation: pulse 2s infinite;
             `;
-            instructions.textContent = '🎬 MODO TIMELINE ATIVO - Suas ações serão posicionadas no tempo atual';
-            
+            instructions.textContent = '🎬 GRAVAÇÃO ATIVA — desenhe: cada traço entra logo após o anterior; a agulha marca o tempo';
+
             document.body.appendChild(overlay);
             document.body.appendChild(instructions);
-            
+
             // Auto-remove após 5 segundos
             setTimeout(() => {
                 if (document.getElementById('timelineModeOverlay')) {
@@ -1781,8 +1881,9 @@
         // NOVA FUNÇÃO: Sair do modo timeline
         FlowAnimator.prototype.exitTimelineMode = function() {
             this.timelineMode = false;
+            this._stopRecordClock();
             document.body.classList.remove('timeline-mode');
-            
+
             const overlay = document.getElementById('timelineModeOverlay');
             if (overlay) {
                 document.body.removeChild(overlay);
