@@ -355,6 +355,43 @@ test('modo timeline grava traços em sequência, não empilhados no mesmo tempo 
     await page.evaluate(() => window.flowAnimator.exitTimelineMode());
 });
 
+test('modo timeline: undo de um traço reposiciona o cursor de gravação (sem espaço vazio) (regressão)', async ({ page }) => {
+    await gotoApp(page);
+
+    const box = await page.locator('#canvas').boundingBox();
+    await page.evaluate(() => window.flowAnimator.enterTimelineMode());
+
+    // Grava o primeiro traço (começa em 0)
+    await page.mouse.move(box.x + 40, box.y + 40);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 120, box.y + 120, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+    expect(await page.evaluate(() => window.flowAnimator.actions.length)).toBe(1);
+
+    // Desfaz ainda dentro do modo gravação (foco fora de campos de texto p/ o atalho valer)
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await page.keyboard.press('Control+z');
+    await page.waitForTimeout(120);
+    expect(await page.evaluate(() => window.flowAnimator.actions.length)).toBe(0);
+
+    // Grava um segundo traço — deve recomeçar em 0, não após o traço removido
+    await page.mouse.move(box.x + 160, box.y + 60);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 260, box.y + 160, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+
+    const actions = await page.evaluate(() =>
+        window.flowAnimator.actions.map(a => ({ startTime: a.startTime }))
+    );
+    expect(actions).toHaveLength(1);
+    // Regressão: sem o fix, o cursor continuava após o traço apagado e deixava um vão inicial
+    expect(actions[0].startTime).toBe(0);
+
+    await page.evaluate(() => window.flowAnimator.exitTimelineMode());
+});
+
 test('posicionar comentário em modo apagar não cria ação-fantasma', async ({ page }) => {
     await gotoApp(page);
 

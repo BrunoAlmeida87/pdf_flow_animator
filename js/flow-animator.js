@@ -48,7 +48,8 @@
             // Modo Timeline (gravação): a agulha corre em tempo real e cada traço é
             // gravado sequencialmente, logo após o fim do anterior (ver enterTimelineMode).
             this.timelineMode = false;
-            this._recordCursor = 0;       // tempo (s) onde o próximo traço começa
+            this._recordCursor = 0;       // fim do último traço gravado (base do relógio na pausa)
+            this._recordFloor = 0;        // piso do próximo início (offset escolhido ao entrar no modo)
             this._recordBase = 0;         // posição (s) da agulha no instante _recordClockRef
             this._recordClockRef = 0;     // Date.now() de referência do relógio de gravação
             this._recordRAF = null;       // id do requestAnimationFrame do relógio
@@ -805,9 +806,11 @@
             this.currentPath = [pos];
             this.drawStartTime = Date.now();
 
-            // Modo gravação: a agulha "pula" para o cursor (fim do último traço) e o
-            // relógio recomeça dali, para o novo traço ser gravado logo após o anterior.
+            // Modo gravação: a agulha "pula" para o início do próximo traço (recalculado
+            // a partir do conteúdo atual, então já reflete undos/deleções) e o relógio
+            // recomeça dali, para o novo traço ser gravado logo após o anterior.
             if (this.timelineMode) {
+                this._recordCursor = this._nextRecordStart();
                 this._startRecordClock(this._recordCursor);
                 this._seekNeedle(this._recordCursor);
             }
@@ -882,7 +885,7 @@
             // - Normal: começa na posição atual da agulha; duração comprimida (×0.5).
             let startTime, finalDuration;
             if (this.timelineMode) {
-                startTime = this._recordCursor;
+                startTime = this._nextRecordStart();
                 finalDuration = Math.max(0.5, Math.min(drawnSeconds, 15));
             } else {
                 startTime = this.animationProgress * this.totalAnimationTime;
@@ -1794,6 +1797,16 @@
             return end;
         };
 
+        // Onde o próximo traço gravado deve começar: logo após o conteúdo existente, mas
+        // nunca antes do piso escolhido ao entrar no modo (_recordFloor). É DERIVADO do
+        // conteúdo real em vez de um contador que só cresce — assim undo/redo, deleção de
+        // item e "limpar" reposicionam o início sozinhos. Sem isso, remover o último traço
+        // e desenhar de novo deixaria um espaço vazio (o próximo começava após o traço já
+        // apagado) e podia estender exports com tempo em branco.
+        FlowAnimator.prototype._nextRecordStart = function() {
+            return Math.max(this._lastContentEnd(), this._recordFloor || 0);
+        };
+
         // Posiciona a agulha (animationProgress) num tempo absoluto em segundos, sem tocar
         // no canvas — só move o playhead da timeline e atualiza os displays de tempo.
         FlowAnimator.prototype._seekNeedle = function(seconds) {
@@ -1841,9 +1854,12 @@
             this.timelineMode = true;
             document.body.classList.add('timeline-mode');
 
-            // Cursor de gravação começa no fim do conteúdo existente (ou na agulha atual,
-            // o que for maior) para não sobrescrever ações/comentários já criados.
-            this._recordCursor = Math.max(this.animationProgress * this.totalAnimationTime, this._lastContentEnd());
+            // Piso do cursor: a agulha atual ou o fim do conteúdo existente, o que for
+            // maior. O início de cada traço é derivado disto + do conteúdo real
+            // (_nextRecordStart), para não sobrescrever o que já existe e para que
+            // undo/deleção reposicionem o cursor automaticamente.
+            this._recordFloor = Math.max(this.animationProgress * this.totalAnimationTime, this._lastContentEnd());
+            this._recordCursor = this._recordFloor;
             this._seekNeedle(this._recordCursor);
             this._startRecordClock(this._recordCursor);
 
