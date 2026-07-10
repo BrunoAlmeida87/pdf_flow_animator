@@ -258,6 +258,18 @@
             background: #1e1e1e;
         }
 
+        /* Track oculta pelo botão 👁️: linha esmaecida, sem itens */
+        .timeline-track.hidden-track {
+            opacity: 0.3;
+            background: repeating-linear-gradient(
+                -45deg,
+                #151515,
+                #151515 8px,
+                #1a1a1a 8px,
+                #1a1a1a 16px
+            );
+        }
+
         .timeline-track.has-parallels {
             background: repeating-linear-gradient(
                 45deg,
@@ -610,7 +622,8 @@
             background: #ff0000;
             pointer-events: none;
             z-index: 100;
-            transition: left 0.1s;
+            /* sem transition: durante o playback contínuo a animação de 0.1s
+               atrasava o playhead em relação ao áudio-visual do canvas */
         }
 
         .timeline-playhead::before {
@@ -993,6 +1006,8 @@
             padding: 5px;
             border-radius: 4px;
             transition: all 0.2s;
+            background: transparent;
+            border: none;
         }
 
         .emoji-btn:hover {

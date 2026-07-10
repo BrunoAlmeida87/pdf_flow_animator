@@ -83,7 +83,16 @@
             // Canvas offscreen reutilizável para renderização de animação (evita criar a cada frame)
             this._offscreenCanvas = document.createElement('canvas');
             this._offscreenCtx = this._offscreenCanvas.getContext('2d');
-            
+
+            // Fundo (PDF/imagem) cacheado como canvas: drawImage é muito mais rápido que
+            // putImageData a cada frame (putImageData contorna a GPU).
+            this._bgCanvas = null;
+
+            // Cache de desenhos já concluídos durante a animação (invalidado a cada mutação de actions)
+            this._persistedDrawsCanvas = document.createElement('canvas');
+            this._persistedDrawsCtx = this._persistedDrawsCanvas.getContext('2d');
+            this._persistedDrawsKey = null;
+
             // Initialize
             this.initializeCanvas();
             this.bindEvents();
@@ -96,18 +105,52 @@
         }
 
         FlowAnimator.prototype.initializeCanvas = function() {
-            this.canvas.width = 1920;
-            this.canvas.height = 1080;
-            this.drawingCanvas.width = 1920;
-            this.drawingCanvas.height = 1080;
-            this._offscreenCanvas.width = 1920;
-            this._offscreenCanvas.height = 1080;
+            this._syncCanvasSizes(1920, 1080);
             this.ctx.lineCap = 'round';
             this.ctx.lineJoin = 'round';
             this.drawingCtx.lineCap = 'round';
             this.drawingCtx.lineJoin = 'round';
             this.clearCanvas();
             this.updateCanvasInfo();
+        };
+
+        // Mantém TODOS os canvases internos com o mesmo tamanho do principal.
+        // Sem isso, o _offscreenCanvas de composição ficava travado em 1920×1080 e
+        // clipava os traços durante a animação em PDFs maiores (ex.: A4 retrato em scale 2).
+        FlowAnimator.prototype._syncCanvasSizes = function(width, height) {
+            this.canvas.width = width;
+            this.canvas.height = height;
+            this.drawingCanvas.width = width;
+            this.drawingCanvas.height = height;
+            this._offscreenCanvas.width = width;
+            this._offscreenCanvas.height = height;
+            this._persistedDrawsCanvas.width = width;
+            this._persistedDrawsCanvas.height = height;
+            this._persistedDrawsKey = null;
+        };
+
+        // Converte o ImageData do fundo em um canvas cacheado (desenhado via drawImage,
+        // que é ordens de grandeza mais rápido que putImageData por frame).
+        FlowAnimator.prototype._setBackgroundFromImageData = function(imageData) {
+            this.pdfImageData = imageData;
+            if (!imageData) {
+                this._bgCanvas = null;
+                return;
+            }
+            this._bgCanvas = document.createElement('canvas');
+            this._bgCanvas.width = imageData.width;
+            this._bgCanvas.height = imageData.height;
+            this._bgCanvas.getContext('2d').putImageData(imageData, 0, 0);
+        };
+
+        // Desenha o fundo (PDF/imagem ou branco) num contexto qualquer.
+        FlowAnimator.prototype._drawBackground = function(ctx) {
+            if (this._bgCanvas) {
+                ctx.drawImage(this._bgCanvas, 0, 0);
+            } else {
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            }
         };
 
         FlowAnimator.prototype.clearCanvas = function() {
@@ -242,17 +285,32 @@
             });
             
             document.getElementById('animSpeed').addEventListener('input', (e) => {
-                self.animationSpeed = parseFloat(e.target.value);
+                const newSpeed = parseFloat(e.target.value);
+                if (!isFinite(newSpeed) || newSpeed <= 0) return;
+                // Recalcular animationStartTime preservando o progresso atual — sem isso,
+                // mudar a velocidade durante o playback reescala todo o tempo já decorrido
+                // e o playhead salta.
+                if (self.isPlaying) {
+                    self.animationStartTime = Date.now() - (self.animationProgress * self.totalAnimationTime * 1000 / newSpeed);
+                }
+                self.animationSpeed = newSpeed;
                 document.getElementById('speedDisplay').textContent = e.target.value + 'x';
             });
-            
+
+            // Debounce: refresh da timeline a cada tecla é pesado, e parseInt('') = NaN
+            // quebrava playhead/régua enquanto o usuário limpava o campo para digitar.
+            let _durationDebounce = null;
             document.getElementById('totalDuration').addEventListener('input', (e) => {
-                self.totalAnimationTime = parseInt(e.target.value);
-                self.timeline.refresh();
+                const value = parseInt(e.target.value);
+                if (!isFinite(value) || value < 1) return; // ignora estados intermediários de digitação
+                self.totalAnimationTime = value;
+                clearTimeout(_durationDebounce);
+                _durationDebounce = setTimeout(() => self.timeline.refresh(), 250);
             });
-            
+
             document.getElementById('persistPaths').addEventListener('change', (e) => {
                 self.persistPaths = e.target.checked;
+                self.invalidateRenderCaches();
             });
             
             // Add comment
@@ -313,14 +371,18 @@
             
             // Keyboard events
             document.addEventListener('keydown', (e) => {
+                // Em campos de texto, Ctrl+Z/Ctrl+Y devem acionar o undo NATIVO do campo,
+                // não o undo do canvas (que ainda por cima dava preventDefault no nativo).
+                const inTextField = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+
                 // Undo: Ctrl+Z
-                if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+                if (!inTextField && (e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
                     e.preventDefault();
                     self.undo();
                     return;
                 }
                 // Redo: Ctrl+Y ou Ctrl+Shift+Z
-                if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+                if (!inTextField && (e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
                     e.preventDefault();
                     self.redo();
                     return;
@@ -339,7 +401,7 @@
                         self.exitCropMode();
                         return;
                     }
-                    self.reset();
+                    // Esc "no vazio" não faz nada — resetar o playhead sem pedir era surpreendente
                 }
                 
                 // Alt key for straight line (free)
@@ -356,7 +418,7 @@
                 }
                 
                 // Other shortcuts
-                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                if (inTextField) {
                     return;
                 }
                 
@@ -521,20 +583,26 @@
         };
 
         FlowAnimator.prototype.handleMouseDown = function(e) {
+            // Durante o posicionamento de comentário, o clique é só para posicionar —
+            // sem isso, clicar no canvas em modo desenhar/apagar também registrava uma
+            // ação-fantasma de um ponto.
+            if (this.isPositioningComment) return;
+
             const pos = this.getMousePos(e);
-            
+
             // Comentários são sempre arrastáveis em qualquer modo
             // (verificar antes de iniciar desenho/apagador)
             const clickedComment = this.getCommentAt(pos.x, pos.y);
             if (clickedComment) {
                 this.selectedComment = clickedComment;
                 this.isDraggingComment = true;
+                this._commentDragSnapshotPending = true; // snapshot no primeiro movimento real
                 this.dragOffset.x = pos.x - clickedComment.x;
                 this.dragOffset.y = pos.y - clickedComment.y;
                 this.canvas.style.cursor = 'grabbing';
                 return;
             }
-            
+
             if (this.mode === 'draw' || this.mode === 'erase') {
                 this.startDrawing(e);
             }
@@ -601,6 +669,12 @@
             }
             
             if (this.isDraggingComment && this.selectedComment) {
+                // Snapshot no primeiro movimento real, para o arrasto ser desfazível
+                // (só aqui — um clique sem arrastar não polui a pilha de undo)
+                if (this._commentDragSnapshotPending) {
+                    this._commentDragSnapshotPending = false;
+                    this.saveUndoState();
+                }
                 this.selectedComment.x = pos.x - this.dragOffset.x;
                 this.selectedComment.y = pos.y - this.dragOffset.y;
                 // Throttle: só redesenha se não há um frame pendente
@@ -684,18 +758,29 @@
         };
 
         // Retorna o comentário sob o ponto (x,y) usando bounding box real do texto
-        FlowAnimator.prototype.getCommentAt = function(x, y) {
-            const ctx = this.ctx;
-            for (let i = this.comments.length - 1; i >= 0; i--) {
-                const comment = this.comments[i];
-                const fontFamily = comment.fontFamily || this.commentFontFamily;
-                const fontSize   = comment.fontSize   || this.commentFontSize;
+        // Largura do texto do comentário, cacheada por (texto, fonte, tamanho) —
+        // getCommentAt roda a cada mousemove e measureText por comentário é caro.
+        FlowAnimator.prototype._getCommentTextWidth = function(comment) {
+            const fontFamily = comment.fontFamily || this.commentFontFamily;
+            const fontSize   = comment.fontSize   || this.commentFontSize;
+            const key = `${comment.text}|${fontFamily}|${fontSize}`;
+            if (comment._textWidthKey !== key) {
+                const ctx = this.ctx;
                 ctx.save();
                 ctx.font = `${fontSize}px ${fontFamily}`;
-                const padding = 10;
-                const textW   = ctx.measureText(comment.text).width;
+                comment._textWidth = ctx.measureText(comment.text).width;
+                comment._textWidthKey = key;
                 ctx.restore();
-                const boxW = textW + padding * 2;
+            }
+            return comment._textWidth;
+        };
+
+        FlowAnimator.prototype.getCommentAt = function(x, y) {
+            for (let i = this.comments.length - 1; i >= 0; i--) {
+                const comment = this.comments[i];
+                const fontSize = comment.fontSize || this.commentFontSize;
+                const padding = 10;
+                const boxW = this._getCommentTextWidth(comment) + padding * 2;
                 const boxH = fontSize + padding * 2;
                 if (x >= comment.x - boxW / 2 && x <= comment.x + boxW / 2 &&
                     y >= comment.y - boxH / 2 && y <= comment.y + boxH / 2) {
@@ -927,14 +1012,8 @@
                 const currentTime = this.animationProgress * this.totalAnimationTime;
                 
                 this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-                
-                if (this.pdfImageData) {
-                    this.ctx.putImageData(this.pdfImageData, 0, 0);
-                } else {
-                    this.ctx.fillStyle = '#ffffff';
-                    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-                }
-                
+                this._drawBackground(this.ctx);
+
                 // NOVO SISTEMA: Processar todas as tracks em paralelo
                 this.renderParallelTracks(currentTime);
                 
@@ -943,61 +1022,99 @@
             }
         };
 
-        // Renderizar tracks em paralelo - usa canvas offscreen reutilizável
+        // Uma track oculta (botão 👁️ na timeline) não deve renderizar suas ações.
+        FlowAnimator.prototype._isTypeVisible = function(type) {
+            return !this.timeline || this.timeline.isTypeVisible(type);
+        };
+
+        // Invalida caches de renderização (chamar após qualquer mutação de actions,
+        // toggle de persistPaths ou de visibilidade de track).
+        FlowAnimator.prototype.invalidateRenderCaches = function() {
+            this._persistedDrawsKey = null;
+        };
+
+        // Renderizar tracks em paralelo - usa canvas offscreen reutilizável.
+        // Desenhos já concluídos (persistPaths) são cacheados em _persistedDrawsCanvas e
+        // recompostos via drawImage, em vez de re-traçar cada um a cada frame; os
+        // apagamentos continuam aplicados por cima de tudo a cada frame (semântica original).
         FlowAnimator.prototype.renderParallelTracks = function(currentTime) {
-            // Reutilizar canvas offscreen (criado uma única vez no construtor)
             const drawCanvas = this._offscreenCanvas;
             const drawCtx = this._offscreenCtx;
             drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-            
-            // PASSO 1: Desenhar todas as ações de desenho que devem estar visíveis
-            for (let action of this.actions) {
-                if (action.type === 'draw') {
+
+            const drawsVisible = this._isTypeVisible('draw');
+            const erasesVisible = this._isTypeVisible('erase');
+
+            if (drawsVisible) {
+                // PASSO 1a: separar desenhos concluídos (cacheáveis) dos ativos
+                const persistedIndices = [];
+                const activeDraws = [];
+                for (let i = 0; i < this.actions.length; i++) {
+                    const action = this.actions[i];
+                    if (action.type !== 'draw') continue;
                     const actionStartTime = action.startTime || 0;
-                    const actionDuration = action.duration || 2;
-                    const actionEndTime = actionStartTime + actionDuration;
-                    
-                    // Verificar se a ação deve estar ativa no tempo atual
+                    const actionEndTime = actionStartTime + (action.duration || 2);
                     if (currentTime >= actionStartTime && currentTime <= actionEndTime) {
-                        // Calcular progresso dentro da ação
-                        const progress = (currentTime - actionStartTime) / actionDuration;
-                        this.drawAnimatedPath(drawCtx, action.points, action.color, action.width, progress);
+                        activeDraws.push(action);
                     } else if (currentTime > actionEndTime && this.persistPaths) {
-                        // Ação já terminou, mas deve permanecer visível
-                        this.drawAnimatedPath(drawCtx, action.points, action.color, action.width, 1);
+                        persistedIndices.push(i);
                     }
                 }
+
+                // PASSO 1b: recompor (ou reaproveitar) a camada de desenhos concluídos
+                const cacheKey = persistedIndices.join(',');
+                if (cacheKey !== this._persistedDrawsKey) {
+                    const pCtx = this._persistedDrawsCtx;
+                    pCtx.clearRect(0, 0, this._persistedDrawsCanvas.width, this._persistedDrawsCanvas.height);
+                    for (const i of persistedIndices) {
+                        const action = this.actions[i];
+                        this.drawAnimatedPath(pCtx, action.points, action.color, action.width, 1);
+                    }
+                    this._persistedDrawsKey = cacheKey;
+                }
+                if (this._persistedDrawsKey !== '') {
+                    drawCtx.drawImage(this._persistedDrawsCanvas, 0, 0);
+                }
+
+                // PASSO 1c: desenhos ativos (progresso parcial, redesenhados a cada frame)
+                for (const action of activeDraws) {
+                    const actionStartTime = action.startTime || 0;
+                    const actionDuration = action.duration || 2;
+                    const progress = (currentTime - actionStartTime) / actionDuration;
+                    this.drawAnimatedPath(drawCtx, action.points, action.color, action.width, progress);
+                }
             }
-            
+
             // PASSO 2: Aplicar apagamentos DIRETAMENTE no canvas de desenhos (não no principal)
-            for (let action of this.actions) {
-                if (action.type === 'erase') {
-                    const actionStartTime = action.startTime || 0;
-                    const actionDuration = action.duration || 2;
-                    const actionEndTime = actionStartTime + actionDuration;
-                    
-                    // Verificar se a ação deve estar ativa no tempo atual
-                    if (currentTime >= actionStartTime && currentTime <= actionEndTime) {
-                        // Calcular progresso dentro da ação
-                        const progress = (currentTime - actionStartTime) / actionDuration;
-                        this.eraseAnimatedPathOnCanvas(drawCtx, action.points, action.size, progress);
-                    } else if (currentTime > actionEndTime && this.persistPaths) {
-                        // Ação já terminou, mas deve permanecer ativa
-                        this.eraseAnimatedPathOnCanvas(drawCtx, action.points, action.size, 1);
+            if (erasesVisible) {
+                for (let action of this.actions) {
+                    if (action.type === 'erase') {
+                        const actionStartTime = action.startTime || 0;
+                        const actionDuration = action.duration || 2;
+                        const actionEndTime = actionStartTime + actionDuration;
+
+                        if (currentTime >= actionStartTime && currentTime <= actionEndTime) {
+                            const progress = (currentTime - actionStartTime) / actionDuration;
+                            this.eraseAnimatedPathOnCanvas(drawCtx, action.points, action.size, progress);
+                        } else if (currentTime > actionEndTime && this.persistPaths) {
+                            this.eraseAnimatedPathOnCanvas(drawCtx, action.points, action.size, 1);
+                        }
                     }
                 }
             }
-            
+
             // PASSO 3: Aplicar resultado final no canvas principal (fundo fica intacto)
             this.ctx.drawImage(drawCanvas, 0, 0);
-            
+
             // PASSO 4: Processar comentários em paralelo
-            for (let comment of this.comments) {
-                const startTime = comment.time || 0;
-                const endTime = startTime + (comment.duration || 3);
-                
-                if (currentTime >= startTime && currentTime <= endTime) {
-                    this.drawComment(comment);
+            if (this._isTypeVisible('comment')) {
+                for (let comment of this.comments) {
+                    const startTime = comment.time || 0;
+                    const endTime = startTime + (comment.duration || 3);
+
+                    if (currentTime >= startTime && currentTime <= endTime) {
+                        this.drawComment(comment);
+                    }
                 }
             }
         };
@@ -1061,18 +1178,27 @@
                 return Promise.resolve();
             }
 
+            // Já tocando: reutiliza a Promise em andamento em vez de criar outra —
+            // sobrescrever _onPlaybackEnd deixaria a Promise anterior (que o export de
+            // vídeo pode estar aguardando) pendurada para sempre.
+            if (this.isPlaying && this._playbackPromise) {
+                return this._playbackPromise;
+            }
+
             this.isPlaying = true;
             this.animationStartTime = Date.now() - (this.animationProgress * this.totalAnimationTime * 1000 / this.animationSpeed);
-            return new Promise((resolve) => {
+            this._playbackPromise = new Promise((resolve) => {
                 this._onPlaybackEnd = resolve;
                 this.animate();
             });
+            return this._playbackPromise;
         };
 
         FlowAnimator.prototype._resolvePlaybackEnd = function() {
             if (this._onPlaybackEnd) {
                 const resolve = this._onPlaybackEnd;
                 this._onPlaybackEnd = null;
+                this._playbackPromise = null;
                 resolve();
             }
         };
@@ -1361,12 +1487,16 @@
 
         // NOVA FUNÇÃO: Reconstruir canvas de desenho - CORRIGIDO
         FlowAnimator.prototype.rebuildDrawingCanvas = function() {
+            // Toda reconstrução implica que actions mudou — invalida o cache da animação
+            this.invalidateRenderCaches();
+
             // Limpar APENAS o canvas de desenho (não o principal)
             this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
-            
+
             // Replay de draw + erase em ordem cronológica para manter estado correto
             const sorted = this.actions.slice().sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
             for (let action of sorted) {
+                if (!this._isTypeVisible(action.type)) continue;
                 if (action.type === 'draw') {
                     this.drawPathOnContext(this.drawingCtx, action.points, action.color, action.width);
                 } else if (action.type === 'erase') {
@@ -1379,21 +1509,17 @@
         FlowAnimator.prototype.redrawMainCanvas = function() {
             // Limpar canvas principal
             this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-            
+
             // SEMPRE desenhar imagem de fundo PRIMEIRO (se existir)
-            if (this.pdfImageData) {
-                this.ctx.putImageData(this.pdfImageData, 0, 0);
-            } else {
-                // Fundo branco padrão
-                this.ctx.fillStyle = '#ffffff';
-                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-            }
-            
+            this._drawBackground(this.ctx);
+
             // Desenhar canvas de desenho sobre o fundo (sem afetar o fundo)
             this.ctx.drawImage(this.drawingCanvas, 0, 0);
-            
-            // Desenhar comentários por último
-            this.drawComments();
+
+            // Desenhar comentários por último (respeitando visibilidade da track)
+            if (this._isTypeVisible('comment')) {
+                this.drawComments();
+            }
         };
 
         FlowAnimator.prototype.redrawWithCurrentPath = function() {
@@ -1829,18 +1955,15 @@
             
             try {
                 const viewport = this.pdfPage.getViewport({ scale: 2 });
-                this.canvas.width = viewport.width;
-                this.canvas.height = viewport.height;
-                this.drawingCanvas.width = viewport.width;
-                this.drawingCanvas.height = viewport.height;
-                
+                this._syncCanvasSizes(viewport.width, viewport.height);
+
                 const renderContext = {
                     canvasContext: this.ctx,
                     viewport: viewport
                 };
-                
+
                 return this.pdfPage.render(renderContext).promise.then(() => {
-                    this.pdfImageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                    this._setBackgroundFromImageData(this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height));
                     this.displayScale = 1;
                     this.updateCanvasDisplay();
                     this.fitToScreen();
@@ -1862,17 +1985,14 @@
                 const scaleY = maxHeight / this.imageData.naturalHeight;
                 const scale = Math.min(1, scaleX, scaleY);
                 
-                this.canvas.width = this.imageData.naturalWidth * scale;
-                this.canvas.height = this.imageData.naturalHeight * scale;
-                this.drawingCanvas.width = this.canvas.width;
-                this.drawingCanvas.height = this.canvas.height;
-                
+                this._syncCanvasSizes(this.imageData.naturalWidth * scale, this.imageData.naturalHeight * scale);
+
                 // Draw image
                 this.ctx.drawImage(this.imageData, 0, 0, this.canvas.width, this.canvas.height);
-                
+
                 // Save image data
-                this.pdfImageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-                
+                this._setBackgroundFromImageData(this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height));
+
                 this.displayScale = 1;
                 this.updateCanvasDisplay();
                 this.fitToScreen();
@@ -1888,6 +2008,10 @@
 
         // Export Video HD - FUNÇÃO COMPLETA
         FlowAnimator.prototype.exportVideoHD = function() {
+            if (this.isRecording) {
+                this.showTooltip('Já existe uma gravação em andamento!');
+                return;
+            }
             if (this.actions.length === 0 && this.comments.length === 0) {
                 this.showTooltip('Adicione algumas ações primeiro!');
                 return;
@@ -1969,13 +2093,8 @@
                 this.mediaRecorder.onstop = function() {
                     try {
                         const blob = new Blob(self.recordingChunks, { type: mimeType });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = 'animacao_HD_' + Date.now() + (mimeType.startsWith('video/mp4') ? '.mp4' : '.webm');
-                        a.click();
-                        URL.revokeObjectURL(url);
-                        
+                        self._downloadBlob(blob, 'animacao_HD_' + Date.now() + (mimeType.startsWith('video/mp4') ? '.mp4' : '.webm'));
+
                         progressBar.style.display = 'none';
                         self.showTooltip('Vídeo HD exportado com sucesso!');
                     } catch (error) {
@@ -2061,73 +2180,68 @@
             document.getElementById('progressBar').style.display = 'none';
         };
 
-        // Export as Frames (Alternativa)
-        FlowAnimator.prototype.exportAsFrames = function() {
+        // Dispara o download de um blob. O revoke é adiado: revogar imediatamente
+        // após o click() pode abortar o download em alguns navegadores.
+        FlowAnimator.prototype._downloadBlob = function(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+        };
+
+        // Export as Frames (Alternativa) — empacota todos os frames num único ZIP.
+        // Antes disparava um download por frame (30fps × 10s = 300 arquivos), o que os
+        // navegadores bloqueiam; agora o usuário recebe um único frames_*.zip.
+        FlowAnimator.prototype.exportAsFrames = async function() {
             if (this.actions.length === 0 && this.comments.length === 0) {
                 this.showTooltip('Adicione algumas ações primeiro!');
                 return;
             }
-            
-            const self = this;
-            
-            // Mostrar progress
+
             const progressBar = document.getElementById('progressBar');
             const progressFillBar = document.getElementById('progressFillBar');
             const progressText = document.getElementById('progressText');
             progressBar.style.display = 'block';
             progressFillBar.style.width = '0%';
             progressText.textContent = 'Exportando frames...';
-            
+
             // Reset para início
             this.reset();
-            
+
             const fps = 30;
-            const totalFrames = Math.floor(this.totalAnimationTime * fps);
-            let frameCount = 0;
-            
-            // Função para exportar um frame
-            const exportFrame = () => {
-                if (frameCount >= totalFrames) {
-                    progressBar.style.display = 'none';
-                    self.showTooltip('Frames exportados com sucesso!');
-                    return;
+            const totalFrames = Math.max(1, Math.floor(this.totalAnimationTime * fps));
+            const zip = new ZipBuilder();
+
+            try {
+                for (let frame = 0; frame < totalFrames; frame++) {
+                    this.animationProgress = frame / totalFrames;
+                    this.renderAnimationFrame();
+
+                    const blob = await new Promise((resolve) => this.canvas.toBlob(resolve, 'image/png'));
+                    if (blob) {
+                        const bytes = new Uint8Array(await blob.arrayBuffer());
+                        zip.addFile('frame_' + String(frame).padStart(4, '0') + '.png', bytes);
+                    }
+
+                    progressFillBar.style.width = ((frame / totalFrames) * 100) + '%';
+                    progressText.textContent = `Frame ${frame + 1}/${totalFrames}`;
+
+                    // Cede a thread a cada lote para não travar a UI
+                    if (frame % 10 === 9) {
+                        await new Promise((r) => setTimeout(r, 0));
+                    }
                 }
-                
-                // Atualizar progresso da animação
-                self.animationProgress = frameCount / totalFrames;
-                self.renderAnimationFrame();
-                
-                // Atualizar barra de progresso
-                const progress = (frameCount / totalFrames) * 100;
-                progressFillBar.style.width = progress + '%';
-                progressText.textContent = `Frame ${frameCount + 1}/${totalFrames}`;
-                
-                // Salvar frame
-                try {
-                    self.canvas.toBlob(function(blob) {
-                        if (blob) {
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = 'frame_' + String(frameCount).padStart(4, '0') + '.png';
-                            a.click();
-                            URL.revokeObjectURL(url);
-                        }
-                        
-                        frameCount++;
-                        
-                        // Próximo frame após delay pequeno
-                        setTimeout(exportFrame, 50);
-                    }, 'image/png');
-                } catch (error) {
-                    self.handleError('Erro ao exportar frame', error);
-                    progressBar.style.display = 'none';
-                    self.showTooltip('Erro ao exportar frames!');
-                }
-            };
-            
-            // Iniciar exportação
-            setTimeout(exportFrame, 100);
+
+                this._downloadBlob(zip.build(), 'frames_' + Date.now() + '.zip');
+                progressBar.style.display = 'none';
+                this.showTooltip(`📦 ${totalFrames} frames exportados em um ZIP!`);
+            } catch (error) {
+                this.handleError('Erro ao exportar frames', error);
+                progressBar.style.display = 'none';
+                this.showTooltip('Erro ao exportar frames!');
+            }
         };
 
         // Save/Load Functions - COMPLETAS
@@ -2145,36 +2259,57 @@
             }
         };
 
+        // Monta o objeto de projeto serializável (usado por salvar e exportar JSON).
+        // includeBackground: embute o PDF/imagem de fundo como PNG dataURL, deixando o
+        // projeto autocontido — reabrir o JSON restaura o fundo em vez de vir branco.
+        FlowAnimator.prototype._buildProjectData = function(includeBackground) {
+            const data = {
+                actions: this.actions,
+                // Remove campos de cache internos (_textWidth*) antes de serializar
+                comments: this.comments.map(c => {
+                    const clean = Object.assign({}, c);
+                    delete clean._textWidth;
+                    delete clean._textWidthKey;
+                    return clean;
+                }),
+                settings: {
+                    animationSpeed: this.animationSpeed,
+                    totalAnimationTime: this.totalAnimationTime,
+                    persistPaths: this.persistPaths,
+                    flowColor: this.flowColor,
+                    lineWidth: this.lineWidth,
+                    eraseSize: this.eraseSize,
+                    commentTextColor: this.commentTextColor,
+                    commentBgColor: this.commentBgColor,
+                    commentBorderColor: this.commentBorderColor,
+                    commentFontFamily: this.commentFontFamily,
+                    commentFontSize: this.commentFontSize,
+                    commentOpacity: this.commentOpacity,
+                    canvasWidth: this.canvas.width,
+                    canvasHeight: this.canvas.height
+                },
+                timestamp: new Date().toISOString(),
+                version: '1.2'
+            };
+            if (includeBackground && this._bgCanvas) {
+                data.background = { dataUrl: this._bgCanvas.toDataURL('image/png') };
+            }
+            return data;
+        };
+
         FlowAnimator.prototype.saveToLocalStorage = function() {
             try {
-                const data = {
-                    actions: this.actions,
-                    comments: this.comments,
-                    settings: {
-                        animationSpeed: this.animationSpeed,
-                        totalAnimationTime: this.totalAnimationTime,
-                        persistPaths: this.persistPaths,
-                        flowColor: this.flowColor,
-                        lineWidth: this.lineWidth,
-                        eraseSize: this.eraseSize,
-                        commentTextColor: this.commentTextColor,
-                        commentBgColor: this.commentBgColor,
-                        commentBorderColor: this.commentBorderColor,
-                        commentFontFamily: this.commentFontFamily,
-                        commentFontSize: this.commentFontSize,
-                        commentOpacity: this.commentOpacity,
-                        canvasWidth: this.canvas.width,
-                        canvasHeight: this.canvas.height
-                    },
-                    timestamp: new Date().toISOString(),
-                    version: '1.1'
-                };
-                
-                localStorage.setItem('flowAnimatorData', JSON.stringify(data));
+                localStorage.setItem('flowAnimatorData', JSON.stringify(this._buildProjectData(true)));
                 this.showTooltip('Dados salvos com sucesso!');
             } catch (error) {
-                this.handleError('Erro ao salvar', error);
-                this.showTooltip('Erro ao salvar dados!');
+                // Cota do localStorage estourada (fundo pode ter alguns MB) — tenta sem o fundo
+                try {
+                    localStorage.setItem('flowAnimatorData', JSON.stringify(this._buildProjectData(false)));
+                    this.showTooltip('⚠️ Salvo sem o fundo (cota do navegador excedida) — use Exportar JSON para o projeto completo.');
+                } catch (retryError) {
+                    this.handleError('Erro ao salvar', retryError);
+                    this.showTooltip('Erro ao salvar dados!');
+                }
             }
         };
 
@@ -2198,37 +2333,9 @@
 
         FlowAnimator.prototype.exportJSON = function() {
             try {
-                const data = {
-                    actions: this.actions,
-                    comments: this.comments,
-                    settings: {
-                        animationSpeed: this.animationSpeed,
-                        totalAnimationTime: this.totalAnimationTime,
-                        persistPaths: this.persistPaths,
-                        flowColor: this.flowColor,
-                        lineWidth: this.lineWidth,
-                        eraseSize: this.eraseSize,
-                        commentTextColor: this.commentTextColor,
-                        commentBgColor: this.commentBgColor,
-                        commentBorderColor: this.commentBorderColor,
-                        commentFontFamily: this.commentFontFamily,
-                        commentFontSize: this.commentFontSize,
-                        commentOpacity: this.commentOpacity,
-                        canvasWidth: this.canvas.width,
-                        canvasHeight: this.canvas.height
-                    },
-                    timestamp: new Date().toISOString(),
-                    version: '1.1'
-                };
-                
+                const data = this._buildProjectData(true);
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `flow_animation_${Date.now()}.json`;
-                a.click();
-                URL.revokeObjectURL(url);
-                
+                this._downloadBlob(blob, `flow_animation_${Date.now()}.json`);
                 this.showTooltip('Arquivo JSON exportado!');
             } catch (error) {
                 this.handleError('Erro ao exportar JSON', error);
@@ -2288,19 +2395,30 @@
                 
                 // Ajustar canvas se necessário
                 if (data.settings.canvasWidth && data.settings.canvasHeight) {
-                    this.canvas.width = data.settings.canvasWidth;
-                    this.canvas.height = data.settings.canvasHeight;
-                    this.drawingCanvas.width = data.settings.canvasWidth;
-                    this.drawingCanvas.height = data.settings.canvasHeight;
-                    this._offscreenCanvas.width = data.settings.canvasWidth;
-                    this._offscreenCanvas.height = data.settings.canvasHeight;
+                    this._syncCanvasSizes(data.settings.canvasWidth, data.settings.canvasHeight);
                     this.updateCanvasDisplay();
                 }
-                
+
                 // Atualizar UI
                 this.updateUIFromSettings();
             }
-            
+
+            // Restaurar fundo embutido (projetos v1.2+). Arquivos antigos sem `background`
+            // mantêm o fundo atualmente carregado (comportamento anterior).
+            if (data.background && data.background.dataUrl) {
+                const img = new Image();
+                img.onload = () => {
+                    const bg = document.createElement('canvas');
+                    bg.width = this.canvas.width;
+                    bg.height = this.canvas.height;
+                    bg.getContext('2d').drawImage(img, 0, 0, bg.width, bg.height);
+                    this._setBackgroundFromImageData(bg.getContext('2d').getImageData(0, 0, bg.width, bg.height));
+                    this.redrawMainCanvas();
+                    document.getElementById('fileName').textContent = 'Fundo restaurado do projeto';
+                };
+                img.src = data.background.dataUrl;
+            }
+
             this.rebuildDrawingCanvas();
             this.redrawMainCanvas();
             this.timeline.refresh();

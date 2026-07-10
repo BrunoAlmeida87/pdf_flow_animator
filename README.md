@@ -15,15 +15,17 @@ Abra **[`main.html`](./main.html)** em um navegador moderno para usar.
   - Comentários com texto, cor de fonte/fundo/borda, fonte, tamanho, opacidade e emojis — arrastáveis em qualquer modo.
 - **Timeline Pro**: tracks separadas por tipo de ação (desenho / apagar / comentário), com:
   - Detecção automática de ações simultâneas (sobrepostas no tempo) e organização visual em camadas.
-  - Arrastar e redimensionar itens para reposicionar/ajustar duração diretamente na timeline.
-  - Zoom, régua de tempo e playhead sincronizado com a reprodução.
-  - Itens da timeline são navegáveis por teclado (`Tab` para focar, `Delete`/`Backspace` para remover).
-- **Reprodução** com velocidade ajustável e opção de manter (ou não) os traços após a animação passar por eles.
-- **Desfazer / Refazer** (`Ctrl+Z` / `Ctrl+Y`), com histórico de até 30 estados.
+  - Arrastar e redimensionar itens com **snap** a intervalos de 0,5s e às bordas de itens vizinhos (`Shift` desativa o snap).
+  - Ocultar (👁️) uma track — os itens somem da timeline, do canvas e da animação — e travar (🔒) uma track contra mover/redimensionar/deletar.
+  - Zoom, régua de tempo e playhead sincronizados também com o scroll horizontal.
+  - Itens navegáveis por teclado: `Tab` foca, `←`/`→` deslocam ±0,1s (`Shift` = ±1s), `Delete`/`Backspace` remove.
+- **Reprodução** com velocidade ajustável (inclusive durante o playback, sem salto do playhead) e opção de manter (ou não) os traços após a animação passar por eles.
+- **Desfazer / Refazer** (`Ctrl+Z` / `Ctrl+Y`), com histórico de até 30 estados — cobre também mover/redimensionar itens da timeline e arrastar comentários no canvas.
 - **Seleção de região (crop)** do canvas para exportar apenas uma área específica em vídeo.
 - **Exportação**:
-  - Vídeo HD via `MediaRecorder` + `canvas.captureStream` — tenta MP4/H.264 primeiro e cai para WebM (VP9/VP8) quando o navegador não suporta MP4 nesse contexto, com fallback automático para exportação de frames PNG quando `MediaRecorder` não está disponível.
-  - Projeto completo em `.json` (e também salvamento rápido via `localStorage` do navegador).
+  - Vídeo HD via `MediaRecorder` + `canvas.captureStream` — tenta MP4/H.264 primeiro e cai para WebM (VP9/VP8) quando o navegador não suporta MP4 nesse contexto.
+  - Frames PNG empacotados num **único arquivo ZIP** (fallback quando `MediaRecorder` não está disponível — ou via botão próprio).
+  - Projeto completo em `.json` **com o PDF/imagem de fundo embutido** (reabrir o projeto restaura o fundo), e salvamento rápido via `localStorage` (se o fundo estourar a cota do navegador, salva sem ele e avisa).
 - **Interface em português ou inglês**, com seletor de idioma no header (persistido em `localStorage`).
 - **Atalhos de teclado**: `Espaço` play/pause · `D`/`E`/`C` trocar de modo · `Ctrl+Z`/`Ctrl+Y` desfazer/refazer · `Esc` cancelar posicionamento de comentário ou seleção de região.
 
@@ -48,12 +50,13 @@ O projeto continua sem bundler/build step, mas agora é modular — HTML, CSS e 
 | `main.html` | Markup (estrutura da UI) e as tags `<link>`/`<script src>` que carregam o resto. |
 | `css/styles.css` | Todo o CSS da interface. |
 | `js/i18n.js` | Dicionário pt-BR/inglês e `applyI18n()` — precisa carregar primeiro (aplica a tradução assim que o DOM carrega). |
-| `js/modal.js` | Modais próprios (`showConfirm`/`showAlertModal`/`showPromptModal`), substituindo `confirm()`/`alert()`/`prompt()` nativos. |
+| `js/modal.js` | Modais próprios (`showConfirm`/`showAlertModal`/`showPromptModal`), substituindo `confirm()`/`alert()`/`prompt()` nativos — com focus trap e bloqueio dos atalhos globais enquanto abertos. |
+| `js/zip.js` | `class ZipBuilder` — empacotador ZIP mínimo (método STORE) usado pela exportação de frames. |
 | `js/timeline-pro.js` | `class TimelinePro` — timeline multi-track: renderização de tracks/régua, detecção de sobreposição via *sweep-line* O(n log n), organização de itens sobrepostos em camadas, drag/resize (pixel ↔ segundo), zoom, playhead. |
 | `js/flow-animator.js` | `function FlowAnimator` + `FlowAnimator.prototype.*` — núcleo do app: canvas duplo (fundo/PDF + desenho do usuário), captura de desenho/apagador, comentários, motor de animação por tempo absoluto, undo/redo, crop, exportação de vídeo/frames/JSON, PDF/imagem, `localStorage`. |
 | `js/main.js` | `escapeHtml`/`insertEmoji`, configuração do PDF.js, e a inicialização (`DOMContentLoaded`) que instancia o `FlowAnimator`. |
 
-Ordem de carregamento importa: `i18n.js` → `modal.js` → `timeline-pro.js` → `flow-animator.js` → `main.js` (o construtor de `FlowAnimator` instancia `new TimelinePro(this)`, então `TimelinePro` precisa existir primeiro).
+Ordem de carregamento importa: `i18n.js` → `modal.js` → `zip.js` → `timeline-pro.js` → `flow-animator.js` → `main.js` (o construtor de `FlowAnimator` instancia `new TimelinePro(this)`, então `TimelinePro` precisa existir primeiro).
 
 Pontos-chave de comportamento (ver também [CLAUDE.md](./CLAUDE.md)):
 - Dois canvases sobrepostos: um para o PDF/imagem de fundo (`ctx`) e outro só para os traços do usuário (`drawingCtx`) — assim apagar nunca destrói o fundo.
@@ -84,8 +87,9 @@ Pontos-chave de comportamento (ver também [CLAUDE.md](./CLAUDE.md)):
     }
   ],
   "settings": { "animationSpeed": 1, "totalAnimationTime": 10, "persistPaths": true, "canvasWidth": 1920, "canvasHeight": 1080 },
+  "background": { "dataUrl": "data:image/png;base64,..." },  // opcional (v1.2+): fundo embutido
   "timestamp": "2026-01-01T00:00:00.000Z",
-  "version": "1.1"
+  "version": "1.2"
 }
 ```
 
