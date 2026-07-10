@@ -1546,6 +1546,9 @@
                     this.erasePathOnContext(this.drawingCtx, action.points, action.size);
                 }
             }
+
+            // Após mutar o conteúdo, reancora a agulha de gravação (se ociosa no modo).
+            this._syncRecordNeedle();
         };
 
         // NOVA FUNÇÃO: Redesenhar canvas principal - CORRIGIDO para preservar fundo
@@ -1843,6 +1846,19 @@
         FlowAnimator.prototype._stopRecordClock = function() {
             if (this._recordRAF) cancelAnimationFrame(this._recordRAF);
             this._recordRAF = null;
+        };
+
+        // Em modo gravação e ocioso, a agulha marca visualmente onde o PRÓXIMO traço vai
+        // começar. Após qualquer mutação de conteúdo (undo/redo, deleção/arraste de item
+        // na timeline, "limpar"), reancora a agulha em _nextRecordStart() — senão ela
+        // ficaria presa no fim de um traço que já foi apagado até o próximo mousedown.
+        // Chamado de rebuildDrawingCanvas(), que roda em todo caminho de mutação; o guard
+        // garante que não interfira durante um traço ativo nem durante o play().
+        FlowAnimator.prototype._syncRecordNeedle = function() {
+            if (this.timelineMode && !this.isDrawing && !this.isPlaying) {
+                this._recordCursor = this._nextRecordStart();
+                this._seekNeedle(this._recordCursor);
+            }
         };
 
         // Modo Timeline = modo de GRAVAÇÃO: ao ativar, um relógio começa a correr e a
