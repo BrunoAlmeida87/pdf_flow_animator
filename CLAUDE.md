@@ -11,12 +11,13 @@ O app é modular (HTML/CSS/JS em arquivos separados), mas **sem bundler/build st
 | `main.html` | Só markup + as tags que carregam CSS/JS. |
 | `css/styles.css` | Todo o CSS. |
 | `js/i18n.js` | Dicionário pt-BR/en (`I18N`) + `applyI18n(lang)`. Carrega primeiro; não depende de mais nada. |
-| `js/modal.js` | `showConfirm`/`showAlertModal`/`showPromptModal` (Promise-based) — substituem `confirm()`/`alert()`/`prompt()` nativos. Depende de `escapeHtml` (definido em `js/main.js`, carregado depois — funciona porque essas funções só são *chamadas* depois do DOM pronto, não no load do script). |
+| `js/modal.js` | `showConfirm`/`showAlertModal`/`showPromptModal` (Promise-based) — substituem `confirm()`/`alert()`/`prompt()` nativos. Interceptam keydown na fase de captura (bloqueiam atalhos globais enquanto abertos) e prendem o Tab (focus trap). Depende de `escapeHtml` (definido em `js/main.js`, carregado depois — funciona porque essas funções só são *chamadas* depois do DOM pronto, não no load do script). |
+| `js/zip.js` | `class ZipBuilder` — ZIP mínimo (STORE + CRC32) para a exportação de frames num único download. Sem dependências. |
 | `js/timeline-pro.js` | `class TimelinePro` — timeline multi-track: renderização de tracks/régua, detecção de sobreposição via *sweep-line* O(n log n), organização de itens sobrepostos em camadas, drag/resize (pixel ↔ segundo), zoom, playhead. |
 | `js/flow-animator.js` | `function FlowAnimator` + `FlowAnimator.prototype.*` — núcleo do app: canvas duplo, desenho/apagador, comentários, motor de animação, undo/redo, crop, exportação de vídeo/frames, PDF/imagem, `localStorage`/JSON. |
 | `js/main.js` | `escapeHtml`/`insertEmoji`, configuração do `pdfjsLib.GlobalWorkerOptions`, e o bloco `DOMContentLoaded` que instancia `new FlowAnimator()`. |
 
-**Ordem de carregamento importa** (ver `<script src>` no fim de `main.html`): `i18n.js` → `modal.js` → `timeline-pro.js` → `flow-animator.js` → `main.js`. `FlowAnimator` instancia `new TimelinePro(this)` no construtor, então `TimelinePro` precisa já existir; `modal.js`/`i18n.js` chamam `escapeHtml` só dentro de handlers de evento (não no top-level do script), por isso podem carregar antes de `main.js` definir essa função.
+**Ordem de carregamento importa** (ver `<script src>` no fim de `main.html`): `i18n.js` → `modal.js` → `zip.js` → `timeline-pro.js` → `flow-animator.js` → `main.js`. `FlowAnimator` instancia `new TimelinePro(this)` no construtor, então `TimelinePro` precisa já existir; `modal.js`/`i18n.js` chamam `escapeHtml` só dentro de handlers de evento (não no top-level do script), por isso podem carregar antes de `main.js` definir essa função.
 
 Ao propor mudanças, prefira edições cirúrgicas no arquivo relevante em vez de reestruturar tudo de novo.
 
@@ -30,6 +31,12 @@ Ao propor mudanças, prefira edições cirúrgicas no arquivo relevante em vez d
 - `confirm()`/`alert()`/`prompt()` nativos **não devem ser usados** — use `showConfirm`/`showAlertModal`/`showPromptModal` de `js/modal.js` (todas retornam Promise; o call site precisa ser `async`).
 - `FlowAnimator.prototype.play()` retorna uma Promise que resolve quando a reprodução para (fim natural, `pause()` ou `reset()`) — usado por `exportVideoHD` para aguardar o fim da gravação sem polling. Se adicionar novos jeitos de parar a reprodução, chame `this._resolvePlaybackEnd()` para não deixar a Promise pendurada.
 - O undo/redo (`saveUndoState`/`undo`/`redo`) compartilha os arrays `points` de cada ação por referência entre snapshots (não clona) — isso só é seguro porque `points` nunca é mutado in-place em nenhum lugar do código (só reatribuído, ex. em `optimizePerformance`). Se algum dia `points` passar a ser mutado in-place, essa otimização de memória vira um bug de corrupção de histórico — volte a clonar (`a.points.slice()`) nesse caso.
+
+- Em `TimelinePro.setupTimeline()`, `updateTrackItems()` roda **antes** de `renderTrackHeaders()` — os headers dependem dos items atualizados (contagem, badge ⚡ PARALELO). Já houve um bug em que os headers ficavam uma rodada atrasados por causa da ordem inversa.
+- O motor de animação usa dois caches que precisam ser invalidados quando `actions` muda: `_bgCanvas` (fundo, recriado via `_setBackgroundFromImageData`) e `_persistedDrawsCanvas` (desenhos concluídos, invalidado via `invalidateRenderCaches()` — já chamado por `rebuildDrawingCanvas()`, que roda em todo caminho de mutação). Se criar um caminho novo que mute `actions` sem chamar `rebuildDrawingCanvas`, chame `invalidateRenderCaches()` manualmente.
+- Redimensionamento de canvas deve passar por `_syncCanvasSizes(w, h)` — nunca setar `canvas.width` direto — para manter `drawingCanvas`, `_offscreenCanvas` e `_persistedDrawsCanvas` no mesmo tamanho (bug histórico: offscreen preso em 1080p clipava traços de PDFs retrato durante a animação).
+- Visibilidade de track (botão 👁️) é consultada via `TimelinePro.isTypeVisible(type)` / `FlowAnimator._isTypeVisible(type)` — qualquer código novo de render deve respeitá-la.
+- Itens da timeline referenciam os objetos reais (`item.data` aponta para a própria action/comment) — deleção/edição usam `indexOf(item.data)`/mutação por referência, nunca parsing de índice do ID (IDs `action_N` existem só para lookup de DOM via `_itemById`).
 
 ## Cuidados ao editar
 

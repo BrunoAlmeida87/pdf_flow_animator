@@ -1,10 +1,19 @@
 name: Validate HTML
 
+# Nota (supply-chain): o ideal seria pinar as actions abaixo por SHA completo em vez de
+# tag móvel (@v4). Não foi feito aqui porque o ambiente onde este workflow foi escrito
+# não tinha como resolver/verificar os SHAs reais — pinar um SHA não verificado é pior
+# que a tag. Para completar: `gh api repos/actions/checkout/git/ref/tags/v4.x.y`.
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   html-validate:
@@ -37,8 +46,25 @@ jobs:
           }
           "
 
+      # Cache dos browsers do Playwright — o passo de install é o mais lento do job
+      - name: Get Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
       - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
 
       - name: Run Playwright tests
         run: npx playwright test

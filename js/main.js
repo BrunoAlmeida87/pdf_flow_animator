@@ -48,6 +48,21 @@
                 
                 // Adicionar o botão após os controles de play (usando ID estável)
                 document.getElementById('playControlsGroup').appendChild(timelineModeBtn);
+
+                // Handlers antes inline no HTML (onclick=""), movidos para cá — permite
+                // uma Content-Security-Policy sem 'unsafe-inline' no futuro
+                document.getElementById('importFileBtn').addEventListener('click', () => {
+                    document.getElementById('pdfInput').click();
+                });
+                document.getElementById('sandboxNotice').addEventListener('click', function() {
+                    this.style.display = 'none';
+                });
+                // Emojis: delegação única em vez de um onclick por emoji. São <button>
+                // nativos, então Enter/Espaço já disparam click sem handler extra.
+                document.querySelector('.emoji-picker').addEventListener('click', (e) => {
+                    const btn = e.target.closest('.emoji-btn');
+                    if (btn && btn.dataset.emoji) insertEmoji(btn.dataset.emoji);
+                });
                 
                 // Inicializar crop overlay
                 flowAnimator.initCropOverlay();

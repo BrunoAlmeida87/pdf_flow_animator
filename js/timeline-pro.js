@@ -20,6 +20,10 @@
             }
 
             setupTimeline() {
+                // updateTrackItems PRIMEIRO: os headers dependem dos items atualizados
+                // (contagem, badge de paralelo) — antes rodava dentro de renderTracks,
+                // depois dos headers, deixando-os sempre uma rodada atrasados
+                this.updateTrackItems();
                 this.renderTrackHeaders();
                 this.renderRuler();
                 this.renderTracks();
@@ -71,21 +75,10 @@
             }
 
             // Sweep-line O(n log n): verifica se há qualquer sobreposição temporal
+            // Sweep-line: há sobreposição temporal real entre itens desta track?
+            // (fins ordenados antes de inícios em empates, para não contar "encostado" como paralelo)
             checkParallelActions(track) {
                 if (track.items.length < 2) return false;
-                const events = [];
-                for (const item of track.items) {
-                    events.push(item.startTime);
-                    events.push(item.startTime + item.duration);
-                }
-                events.sort((a, b) => a - b);
-                let active = 0;
-                for (const item of track.items.slice().sort((a, b) => a.startTime - b.startTime)) {
-                    active++;
-                    if (active > 1) return true;
-                    // decrementar ao final — abordagem simplificada por sweep de início/fim
-                }
-                // Usar abordagem correta de sweep
                 const starts = track.items.map(i => ({ t: i.startTime, delta: 1 }));
                 const ends   = track.items.map(i => ({ t: i.startTime + i.duration, delta: -1 }));
                 const all = [...starts, ...ends].sort((a, b) => a.t - b.t || a.delta - b.delta);
@@ -107,8 +100,9 @@
                     timePoints.push({ time: item.startTime + item.duration, type: 'end' });
                 });
                 
-                // Ordenar por tempo
-                timePoints.sort((a, b) => a.time - b.time);
+                // Ordenar por tempo; em empates, fins antes de inícios — um item que termina
+                // exatamente quando outro começa não conta como simultâneo
+                timePoints.sort((a, b) => a.time - b.time || (a.type === 'end' ? -1 : 1) - (b.type === 'end' ? -1 : 1));
                 
                 let current = 0;
                 timePoints.forEach(point => {
@@ -175,37 +169,53 @@
 
             renderTracks() {
                 const container = document.getElementById('timelineTracks');
+
+                // (updateTrackItems roda em setupTimeline, antes dos headers)
+
+                // Skip: se nada visível mudou desde o último render, não reconstruir o DOM
+                // (evita churn de listeners e flicker em refresh() sem mudança real)
+                const signature = this.zoom + '|' + this.tracks.map(t =>
+                    `${t.id}:${t.visible}:${t.expanded ? 1 : 0}:` +
+                    t.items.map(i => `${i.id},${i.startTime},${i.duration}`).join(';')
+                ).join('||');
+                if (signature === this._lastTracksSignature) return;
+                this._lastTracksSignature = signature;
+
                 container.innerHTML = '';
-                
-                // Atualizar items dos tracks baseado nas ações
-                this.updateTrackItems();
-                
+
                 this.tracks.forEach(track => {
                     const trackEl = document.createElement('div');
                     trackEl.className = 'timeline-track';
                     trackEl.dataset.trackId = track.id;
-                    
+
+                    // Track oculta: mostra a linha esmaecida, sem itens
+                    if (track.visible === false) {
+                        trackEl.classList.add('hidden-track');
+                        container.appendChild(trackEl);
+                        return;
+                    }
+
                     // Detectar items paralelos e organizá-los em layers
                     const layeredItems = this.organizeItemsInLayers(track.items);
                     const hasParallels = layeredItems.some(layer => layer.length > 1);
-                    
+
                     if (hasParallels) {
                         trackEl.classList.add('has-parallels');
                     }
-                    
+
                     // Criar layers para items
                     layeredItems.forEach((layerItems, layerIndex) => {
                         const layerEl = document.createElement('div');
                         layerEl.className = `timeline-layer layer-${layerIndex}`;
-                        
+
                         layerItems.forEach((item, itemIndex) => {
                             const itemEl = this.createTimelineItem(item, track, itemIndex, layerIndex, layerItems.length > 1);
                             layerEl.appendChild(itemEl);
                         });
-                        
+
                         trackEl.appendChild(layerEl);
                     });
-                    
+
                     container.appendChild(trackEl);
                 });
             }
@@ -289,14 +299,16 @@
                 }
             }
 
-            // moveItemLayer: reservado para futura implementação de reordenação visual
-            moveItemLayer(item, direction) {
-                // Reordenação por layer ainda não implementada
+            // Track de um tipo está visível? (usado pelo motor de render do FlowAnimator)
+            isTypeVisible(type) {
+                const track = this.tracks.find(t => t.type === type);
+                return !track || track.visible !== false;
             }
 
             updateTrackItems() {
                 // Limpar items
                 this.tracks.forEach(track => track.items = []);
+                this._itemById = new Map(); // id → wrapper (com .data por referência)
                 
                 // NOVO SISTEMA: Processar ações com tempo absoluto (não mais sequencial)
                 this.animator.actions.forEach((action, index) => {
@@ -321,8 +333,9 @@
                     }
                     
                     targetTrack.items.push(item);
+                    this._itemById.set(item.id, item);
                 });
-                
+
                 // Processar comentários (já suportam tempo absoluto)
                 this.animator.comments.forEach((comment, index) => {
                     const item = {
@@ -333,10 +346,11 @@
                         data: comment,
                         index: index
                     };
-                    
+
                     let commentTrack = this.tracks.find(t => t.type === 'comment');
                     if (commentTrack) {
                         commentTrack.items.push(item);
+                        this._itemById.set(item.id, item);
                     }
                 });
                 
@@ -355,9 +369,12 @@
                 
                 const config = trackConfigs[type] || { name: 'Track', color: '#888' };
                 const existingCount = this.tracks.filter(t => t.type === type).length;
-                
+
+                // Contador sequencial em vez de Date.now(): duas tracks criadas no
+                // mesmo milissegundo colidiriam de ID
+                TimelinePro._trackSeq = (TimelinePro._trackSeq || 0) + 1;
                 return {
-                    id: type + '_track_' + Date.now(),
+                    id: type + '_track_' + TimelinePro._trackSeq,
                     name: config.name + (existingCount > 0 ? ` ${existingCount + 1}` : ''),
                     type: type,
                     items: [],
@@ -402,11 +419,16 @@
                     <div class="timeline-item-delete" title="Deletar item" aria-label="Deletar item">×</div>
                 `;
 
-                // Acessibilidade: Delete/Backspace no item focado remove com confirmação (igual ao botão de deletar)
+                // Acessibilidade: Delete/Backspace remove (com confirmação); setas ←/→
+                // deslocam o item em ±0,1s (Shift = ±1s) mantendo o foco nele
                 el.addEventListener('keydown', (e) => {
-                    if ((e.key === 'Delete' || e.key === 'Backspace') && !e.target.closest('input, textarea')) {
+                    if (e.target.closest('input, textarea')) return;
+                    if (e.key === 'Delete' || e.key === 'Backspace') {
                         e.preventDefault();
                         this.deleteTimelineItem(item);
+                    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                        e.preventDefault();
+                        this.nudgeItem(item, (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1.0 : 0.1));
                     }
                 });
                 
@@ -452,51 +474,113 @@
                 return el;
             }
 
-            // Deletar item da timeline
+            // Deletar item da timeline (por referência — imune a índices obsoletos
+            // caso outra deleção tenha acontecido entre o render e este clique)
             async deleteTimelineItem(item, skipConfirm = false) {
-                if (!skipConfirm && !(await showConfirm('Deletar este item da timeline?'))) return;
-                
-                this.animator.saveUndoState();
+                // Track travada (🔒) bloqueia deleção por qualquer via: botão ×, tecla
+                // Delete e triple-click
+                const track = this.tracks.find(t => t.type === item.type);
+                if (track && track.locked) {
+                    this.animator.showTooltip('🔒 Track travada — destrave para deletar.');
+                    return;
+                }
 
-                if (item.id.startsWith('comment_')) {
-                    const index = parseInt(item.id.split('_')[1]);
-                    if (this.animator.comments[index] !== undefined) {
+                if (!skipConfirm && !(await showConfirm('Deletar este item da timeline?'))) return;
+
+                if (item.type === 'comment') {
+                    const index = this.animator.comments.indexOf(item.data);
+                    if (index !== -1) {
+                        this.animator.saveUndoState();
                         this.animator.comments.splice(index, 1);
                         this.animator.showTooltip('💬 Comentário deletado!');
                     }
-                } else if (item.id.startsWith('action_')) {
-                    const index = parseInt(item.id.split('_')[1]);
-                    if (this.animator.actions[index] !== undefined) {
+                } else {
+                    const index = this.animator.actions.indexOf(item.data);
+                    if (index !== -1) {
+                        this.animator.saveUndoState();
                         this.animator.actions.splice(index, 1);
                         this.animator.showTooltip('🎨 Ação deletada! (Ctrl+Z para desfazer)');
                     }
                 }
-                
+
                 this.animator.rebuildDrawingCanvas();
                 this.animator.redrawMainCanvas();
                 this.animator.updateInfo();
                 this.setupTimeline();
             }
 
+            // Desloca um item no tempo via teclado (setas). Snapshot de undo só na
+            // primeira batida de uma sequência (evita inundar a pilha ao segurar a tecla).
+            nudgeItem(item, deltaSeconds) {
+                const track = this.tracks.find(t => t.type === item.type);
+                if (track && track.locked) {
+                    this.animator.showTooltip('🔒 Track travada — destrave para mover.');
+                    return;
+                }
+
+                const now = Date.now();
+                if (!this._lastNudgeAt || now - this._lastNudgeAt > 800) {
+                    this.animator.saveUndoState();
+                }
+                this._lastNudgeAt = now;
+
+                if (item.type === 'comment') {
+                    item.data.time = Math.max(0, (item.data.time || 0) + deltaSeconds);
+                } else {
+                    item.data.startTime = Math.max(0, (item.data.startTime || 0) + deltaSeconds);
+                }
+
+                this.animator.invalidateRenderCaches();
+                this.animator.rebuildDrawingCanvas();
+                this.animator.redrawMainCanvas();
+                this.animator.updateInfo();
+                this.setupTimeline();
+
+                // Recupera o foco no mesmo item após o re-render (IDs por índice são
+                // estáveis num nudge — nada é adicionado/removido)
+                const el = document.querySelector(`[data-item-id="${item.id}"]`);
+                if (el) el.focus();
+
+                const t = item.type === 'comment' ? item.data.time : item.data.startTime;
+                this.animator.showTooltip(`⏰ ${t.toFixed(1)}s`);
+            }
+
             updatePlayhead() {
                 const playhead = document.getElementById('playhead');
-                const x = this.animator.animationProgress * this.animator.totalAnimationTime * this.pixelsPerSecond * this.zoom;
-                playhead.style.left = x + 'px';
-                
-                // Auto-scroll
                 const scrollable = document.getElementById('timelineScrollable');
-                const viewWidth = scrollable.clientWidth;
-                if (x > scrollable.scrollLeft + viewWidth - 100) {
-                    scrollable.scrollLeft = x - 100;
-                } else if (x < scrollable.scrollLeft) {
-                    scrollable.scrollLeft = Math.max(0, x - 50);
+                const x = this.animator.animationProgress * this.animator.totalAnimationTime * this.pixelsPerSecond * this.zoom;
+
+                // Auto-scroll — suprimido por alguns segundos após o usuário rolar
+                // manualmente, para não brigar com ele durante o playback
+                const userScrolling = this._userScrollUntil && Date.now() < this._userScrollUntil;
+                if (!userScrolling) {
+                    const viewWidth = scrollable.clientWidth;
+                    if (x > scrollable.scrollLeft + viewWidth - 100) {
+                        scrollable.scrollLeft = x - 100;
+                    } else if (x < scrollable.scrollLeft) {
+                        scrollable.scrollLeft = Math.max(0, x - 50);
+                    }
                 }
+
+                // O playhead vive dentro da régua (que não rola) — compensar o scroll
+                // das tracks para os dois ficarem sempre alinhados
+                playhead.style.left = (x - scrollable.scrollLeft) + 'px';
+            }
+
+            // Mantém as marcas da régua alinhadas com o scroll horizontal das tracks
+            syncRulerScroll() {
+                const scrollable = document.getElementById('timelineScrollable');
+                const marks = document.getElementById('rulerMarks');
+                marks.style.transform = `translateX(${-scrollable.scrollLeft}px)`;
+                // Reposicionar o playhead com o novo offset
+                const playhead = document.getElementById('playhead');
+                const x = this.animator.animationProgress * this.animator.totalAnimationTime * this.pixelsPerSecond * this.zoom;
+                playhead.style.left = (x - scrollable.scrollLeft) + 'px';
             }
 
             formatTime(seconds) {
-                const mins = Math.floor(seconds / 60);
-                const secs = Math.floor(seconds % 60);
-                return `${mins}:${secs.toString().padStart(2, '0')}`;
+                // Delegado para o formatador único do app (MM:SS com zero à esquerda)
+                return this.animator.formatTime(seconds);
             }
 
             getTimeInterval() {
@@ -556,6 +640,12 @@
                     if (action === 'visibility') {
                         track.visible = !track.visible;
                         btn.classList.toggle('active');
+                        // Ocultar de verdade: some da timeline, do canvas e da animação
+                        this.animator.invalidateRenderCaches();
+                        this.animator.rebuildDrawingCanvas();
+                        this.animator.redrawMainCanvas();
+                        this.renderTracks();
+                        this.animator.showTooltip(track.visible ? `👁️ Track "${track.name}" visível` : `Track "${track.name}" oculta`);
                     } else if (action === 'lock') {
                         track.locked = !track.locked;
                         btn.classList.toggle('active');
@@ -576,18 +666,27 @@
                     this.renderTrackHeaders();
                 });
                 
-                // Ruler click
+                // Ruler click (compensando o scroll horizontal das tracks)
                 document.getElementById('timelineRuler').addEventListener('click', (e) => {
                     const rect = e.currentTarget.getBoundingClientRect();
-                    const x = e.clientX - rect.left;
+                    const scrollable = document.getElementById('timelineScrollable');
+                    const x = e.clientX - rect.left + scrollable.scrollLeft;
                     const time = x / (this.pixelsPerSecond * this.zoom);
                     const progress = time / this.animator.totalAnimationTime;
-                    
+
                     this.animator.animationProgress = Math.max(0, Math.min(1, progress));
                     this.animator.renderAnimationFrame();
                     this.updatePlayhead();
                     this.animator.updateTimeDisplay();
                 });
+
+                // Sincronizar régua/playhead com o scroll horizontal das tracks;
+                // rolagem manual (wheel) suprime o auto-scroll do playhead por 2s
+                const scrollableEl = document.getElementById('timelineScrollable');
+                scrollableEl.addEventListener('scroll', () => this.syncRulerScroll());
+                scrollableEl.addEventListener('wheel', () => {
+                    this._userScrollUntil = Date.now() + 2000;
+                }, { passive: true });
                 
                 // Timeline item interactions - CORRIGIDO para permitir arrasto
                 const timelineTracks = document.getElementById('timelineTracks');
@@ -642,21 +741,6 @@
                     }
                 });
                 
-                // Add track
-                document.getElementById('addTrackBtn').addEventListener('click', () => {
-                    const newTrack = {
-                        id: 'track_' + Date.now(),
-                        name: 'Nova Track ' + (this.tracks.length + 1),
-                        type: 'custom',
-                        items: [],
-                        color: '#888',
-                        locked: false,
-                        visible: true
-                    };
-                    this.tracks.push(newTrack);
-                    this.setupTimeline();
-                });
-                
                 // Clear timeline
                 document.getElementById('clearTimelineBtn').addEventListener('click', async () => {
                     if (await showConfirm('Limpar toda a timeline?')) {
@@ -667,32 +751,74 @@
             }
 
             startDrag(e, item) {
+                this.animator.saveUndoState(); // mover item é desfazível
                 this.isDragging = true;
                 this.draggedItem = item;
                 this.dragStartX = e.clientX;
                 this.dragStartLeft = parseInt(item.style.left);
-                
+
                 item.classList.add('selected');
                 document.body.style.cursor = 'grabbing';
-                
+
                 // Feedback visual imediato
                 item.style.opacity = '0.8';
             }
 
+            // Snap do tempo de início a múltiplos de 0,5s e a bordas de itens vizinhos
+            // da mesma track (Shift desativa). Retorna o tempo ajustado.
+            _snapTime(rawTime, itemDuration, trackId, excludeItemId) {
+                const threshold = 10 / (this.pixelsPerSecond * this.zoom); // ~10px em segundos
+                const candidates = [];
+
+                // Grade de 0,5s — para a borda inicial e para a final
+                candidates.push(Math.round(rawTime * 2) / 2);
+                candidates.push(Math.round((rawTime + itemDuration) * 2) / 2 - itemDuration);
+
+                // Bordas dos vizinhos na mesma track
+                const track = this.tracks.find(t => t.id === trackId);
+                if (track) {
+                    for (const other of track.items) {
+                        if (other.id === excludeItemId) continue;
+                        const edges = [other.startTime, other.startTime + other.duration];
+                        for (const edge of edges) {
+                            candidates.push(edge);                 // início alinhado à borda
+                            candidates.push(edge - itemDuration);  // fim alinhado à borda
+                        }
+                    }
+                }
+
+                let best = rawTime;
+                let bestDist = threshold;
+                for (const c of candidates) {
+                    const dist = Math.abs(c - rawTime);
+                    if (c >= 0 && dist < bestDist) {
+                        best = c;
+                        bestDist = dist;
+                    }
+                }
+                return best;
+            }
+
             handleDrag(e) {
                 if (!this.draggedItem) return;
-                
+
+                const pxPerSec = this.pixelsPerSecond * this.zoom;
                 const deltaX = e.clientX - this.dragStartX;
-                const newLeft = Math.max(0, this.dragStartLeft + deltaX);
-                this.draggedItem.style.left = newLeft + 'px';
-                
-                // Update time
-                const newTime = newLeft / (this.pixelsPerSecond * this.zoom);
-                
+                const rawLeft = Math.max(0, this.dragStartLeft + deltaX);
+                let newTime = rawLeft / pxPerSec;
+
+                // Snap (Shift desativa)
+                if (!e.shiftKey) {
+                    const itemDuration = parseInt(this.draggedItem.style.width) / pxPerSec;
+                    newTime = this._snapTime(newTime, itemDuration, this.draggedItem.dataset.trackId, this.draggedItem.dataset.itemId);
+                }
+
+                this.draggedItem.style.left = (newTime * pxPerSec) + 'px';
+
                 // Mostrar preview do tempo com melhor feedback
                 const timeStr = this.formatTime(newTime);
                 this.animator.showTooltip(`⏰ Movendo para: ${timeStr} (${newTime.toFixed(1)}s)`);
-                
+
                 // Visual feedback - destacar item sendo arrastado
                 this.draggedItem.style.transform = 'translateY(-3px)';
                 this.draggedItem.style.boxShadow = '0 8px 16px rgba(74, 144, 226, 0.4)';
@@ -700,13 +826,14 @@
             }
 
             startResize(e, item) {
+                this.animator.saveUndoState(); // redimensionar item é desfazível
                 this.isResizing = true;
                 this.resizedItem = item;
                 this.resizeDirection = e.target.classList.contains('left') ? 'left' : 'right';
                 this.dragStartX = e.clientX;
                 this.resizeStartWidth = parseInt(item.style.width);
                 this.resizeStartLeft = parseInt(item.style.left);
-                
+
                 document.body.style.cursor = 'ew-resize';
             }
 
@@ -739,31 +866,34 @@
 
             endDragResize() {
                 if (!this.draggedItem && !this.resizedItem) return;
-                
+
                 const item = this.draggedItem || this.resizedItem;
                 const itemId = item.dataset.itemId;
-                
+
                 // Calcular novos valores baseado na posição visual
                 const newLeft = parseInt(item.style.left);
                 const newWidth = parseInt(item.style.width);
                 const newTime = newLeft / (this.pixelsPerSecond * this.zoom);
                 const newDuration = newWidth / (this.pixelsPerSecond * this.zoom);
-                
-                // Update the actual data - CORRIGIDO
-                if (itemId.startsWith('comment_')) {
-                    const index = parseInt(itemId.split('_')[1]);
-                    if (this.animator.comments[index]) {
-                        this.animator.comments[index].time = Math.max(0, newTime);
-                        this.animator.comments[index].duration = Math.max(0.5, newDuration);
+
+                // Clique sem movimento real: descarta o snapshot de undo tirado no início
+                const startLeft = this.isDragging ? this.dragStartLeft : this.resizeStartLeft;
+                const startWidth = this.isResizing ? this.resizeStartWidth : newWidth;
+                if (newLeft === startLeft && newWidth === startWidth) {
+                    this.animator._undoStack.pop();
+                }
+
+                // Atualiza o dado real por REFERÊNCIA (o wrapper aponta para o próprio
+                // objeto em actions/comments) — imune a índices obsoletos
+                const wrapper = this._itemById ? this._itemById.get(itemId) : null;
+                if (wrapper) {
+                    if (wrapper.type === 'comment') {
+                        wrapper.data.time = Math.max(0, newTime);
+                        wrapper.data.duration = Math.max(0.5, newDuration);
                         this.animator.showTooltip(`💬 Comentário movido para ${newTime.toFixed(1)}s`);
-                    }
-                } else if (itemId.startsWith('action_')) {
-                    const index = parseInt(itemId.split('_')[1]);
-                    if (this.animator.actions[index]) {
-                        // Atualizar tanto startTime quanto duration
-                        this.animator.actions[index].startTime = Math.max(0, newTime);
-                        this.animator.actions[index].duration = Math.max(0.5, newDuration);
-                        
+                    } else {
+                        wrapper.data.startTime = Math.max(0, newTime);
+                        wrapper.data.duration = Math.max(0.5, newDuration);
                         if (this.isDragging) {
                             this.animator.showTooltip(`🎨 Ação movida para ${newTime.toFixed(1)}s`);
                         } else {
@@ -800,64 +930,28 @@
                 this.setupTimeline(); // Rebuild para refletir novos tempos
             }
 
-            reorderAction(actionIndex, targetTime) {
-                const action = this.animator.actions[actionIndex];
-                if (!action) return;
-                
-                // Remover da posição atual
-                this.animator.actions.splice(actionIndex, 1);
-                
-                // Encontrar nova posição baseada no tempo
-                let insertIndex = 0;
-                let cumulativeTime = 0;
-                
-                for (let i = 0; i < this.animator.actions.length; i++) {
-                    if (cumulativeTime >= targetTime) {
-                        insertIndex = i;
-                        break;
-                    }
-                    cumulativeTime += this.animator.actions[i].duration || 2;
-                    insertIndex = i + 1;
-                }
-                
-                // Inserir na nova posição
-                this.animator.actions.splice(insertIndex, 0, action);
-                
-                this.animator.showTooltip('Ação reordenada!');
-            }
-
-            // NOVA FUNÇÃO: Obter dados do item
+            // Obter o wrapper do item pelo ID (com .data apontando para o objeto real)
             getItemData(itemId) {
-                if (itemId.startsWith('comment_')) {
-                    const index = parseInt(itemId.split('_')[1]);
-                    return { type: 'comment', index: index, data: this.animator.comments[index] };
-                } else if (itemId.startsWith('action_')) {
-                    const index = parseInt(itemId.split('_')[1]);
-                    return { type: 'action', index: index, data: this.animator.actions[index] };
-                }
-                return null;
+                return (this._itemById && this._itemById.get(itemId)) || null;
             }
 
             // NOVA FUNÇÃO: Focar em um item específico
             focusOnItem(itemData) {
                 if (!itemData || !itemData.data) return;
-                
-                let targetTime = 0;
-                if (itemData.type === 'comment') {
-                    targetTime = itemData.data.time || 0;
-                } else if (itemData.type === 'action') {
-                    targetTime = itemData.data.startTime || 0;
-                }
-                
+
+                const targetTime = itemData.type === 'comment'
+                    ? (itemData.data.time || 0)
+                    : (itemData.data.startTime || 0);
+
                 // Posicionar playhead no item
                 const progress = targetTime / this.animator.totalAnimationTime;
                 this.animator.animationProgress = Math.max(0, Math.min(1, progress));
                 this.animator.renderAnimationFrame();
                 this.updatePlayhead();
                 this.animator.updateTimeDisplay();
-                
+
                 // Destacar o item
-                const itemEl = document.querySelector(`[data-item-id="${itemData.type}_${itemData.index}"]`);
+                const itemEl = document.querySelector(`[data-item-id="${itemData.id}"]`);
                 if (itemEl) {
                     itemEl.classList.add('selected', 'cycle-highlight');
                     setTimeout(() => {

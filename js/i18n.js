@@ -85,6 +85,8 @@ const I18N_STORAGE_KEY = 'flowAnimatorLang';
 
 function applyI18n(lang) {
     const dict = I18N[lang] || I18N['pt-BR'];
+    // Leitores de tela usam o lang do documento para a pronúncia correta
+    document.documentElement.lang = I18N[lang] ? lang : 'pt-BR';
     document.querySelectorAll('[data-i18n]').forEach((el) => {
         const key = el.dataset.i18n;
         if (dict[key] === undefined) return;

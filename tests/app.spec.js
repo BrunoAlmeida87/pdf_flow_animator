@@ -198,3 +198,304 @@ test('trocar idioma com um arquivo carregado não reseta o nome do arquivo (regr
     await page.waitForTimeout(100);
     await expect(page.locator('#fileName')).toHaveText('diagrama-exemplo.png');
 });
+
+// ─── Regressões do lote de melhorias profundas ─────────────────────────────
+
+test('badge PARALELO só aparece com sobreposição temporal real', async ({ page }) => {
+    await gotoApp(page);
+
+    // Dois desenhos NÃO sobrepostos (0-1s e 2-3s) → sem badge
+    await page.evaluate(() => {
+        window.flowAnimator.actions.push(
+            { type: 'draw', points: [{ x: 10, y: 10 }, { x: 50, y: 50 }], color: '#f00', width: 3, startTime: 0, duration: 1 },
+            { type: 'draw', points: [{ x: 60, y: 60 }, { x: 90, y: 90 }], color: '#0f0', width: 3, startTime: 2, duration: 1 }
+        );
+        window.flowAnimator.timeline.refresh();
+    });
+    let headerHtml = await page.locator('#trackHeaders').innerHTML();
+    expect(headerHtml).not.toContain('PARALELO');
+
+    // Agora com sobreposição real (0-1s e 0.5-1.5s) → badge aparece
+    await page.evaluate(() => {
+        window.flowAnimator.actions[1].startTime = 0.5;
+        window.flowAnimator.timeline.refresh();
+    });
+    headerHtml = await page.locator('#trackHeaders').innerHTML();
+    expect(headerHtml).toContain('PARALELO');
+});
+
+test('animação não clipa traços abaixo de 1080px após redimensionar canvas (PDF retrato)', async ({ page }) => {
+    await gotoApp(page);
+
+    const pixel = await page.evaluate(() => {
+        const fa = window.flowAnimator;
+        // Simula o efeito de renderPage num A4 retrato em scale 2 (1190×1684)
+        fa._syncCanvasSizes(1190, 1684);
+        // Traço na região que antes era clipada (y > 1080)
+        fa.actions.push({
+            type: 'draw',
+            points: [{ x: 100, y: 1400 }, { x: 400, y: 1400 }],
+            color: '#ff0000', width: 20, startTime: 0, duration: 1
+        });
+        // Render num tempo em que a ação já terminou (persistPaths mantém visível)
+        fa.animationProgress = 0.5; // 5s de 10s — bem depois do fim da ação
+        fa.renderAnimationFrame();
+        const d = fa.ctx.getImageData(250, 1400, 1, 1).data;
+        return { r: d[0], g: d[1], b: d[2], a: d[3] };
+    });
+
+    // O pixel no meio do traço deve ser vermelho (antes: branco, clipado pelo offscreen 1080p)
+    expect(pixel.r).toBeGreaterThan(200);
+    expect(pixel.g).toBeLessThan(100);
+});
+
+test('Ctrl+Z dentro do textarea não dispara o undo do canvas', async ({ page }) => {
+    await gotoApp(page);
+
+    // Desenha um traço (vira 1 ação)
+    const canvas = page.locator('#canvas');
+    const box = await canvas.boundingBox();
+    await page.mouse.move(box.x + 50, box.y + 50);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 150, box.y + 150, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+    await expect(page.locator('#drawCount')).toHaveText('1');
+
+    // Ctrl+Z com o foco no textarea de comentário: NÃO deve desfazer a ação do canvas
+    await page.locator('#commentText').focus();
+    await page.keyboard.press('Control+z');
+    await page.waitForTimeout(150);
+    await expect(page.locator('#drawCount')).toHaveText('1');
+
+    // Fora do textarea (foco devolvido ao body), Ctrl+Z continua desfazendo normalmente
+    await page.evaluate(() => document.activeElement.blur());
+    await page.keyboard.press('Control+z');
+    await page.waitForTimeout(150);
+    await expect(page.locator('#drawCount')).toHaveText('0');
+});
+
+test('mudar velocidade durante playback não faz o playhead saltar', async ({ page }) => {
+    await gotoApp(page);
+
+    const progressAfter = await page.evaluate(async () => {
+        const fa = window.flowAnimator;
+        fa.actions.push({ type: 'draw', points: [{ x: 1, y: 1 }, { x: 2, y: 2 }], color: '#000', width: 3, startTime: 0, duration: 9 });
+        fa.animationProgress = 0.5;
+        fa.play(); // inicia em 50%
+        // Muda a velocidade para 2x em pleno playback
+        const speed = document.getElementById('animSpeed');
+        speed.value = '2';
+        speed.dispatchEvent(new Event('input'));
+        await new Promise(r => setTimeout(r, 100));
+        const p = fa.animationProgress;
+        fa.pause();
+        return p;
+    });
+
+    // Sem o fix: elapsed reescalado → progresso saltaria para ~1.0.
+    // Com o fix: 100ms a 2x sobre 10s ≈ +0.02 → fica perto de 0.5.
+    expect(progressAfter).toBeGreaterThan(0.49);
+    expect(progressAfter).toBeLessThan(0.6);
+});
+
+test('play() duplo não deixa a Promise do export pendurada', async ({ page }) => {
+    await gotoApp(page);
+
+    const resolved = await page.evaluate(async () => {
+        const fa = window.flowAnimator;
+        fa.actions.push({ type: 'draw', points: [{ x: 1, y: 1 }, { x: 2, y: 2 }], color: '#000', width: 3, startTime: 0, duration: 1 });
+        const first = fa.play();
+        fa.play(); // segunda chamada (ex.: usuário aperta Espaço durante gravação)
+        fa.reset(); // encerra o playback
+        // A primeira Promise deve resolver (com timeout de guarda de 1s)
+        return await Promise.race([
+            first.then(() => true),
+            new Promise(r => setTimeout(() => r(false), 1000))
+        ]);
+    });
+    expect(resolved).toBe(true);
+});
+
+test('posicionar comentário em modo apagar não cria ação-fantasma', async ({ page }) => {
+    await gotoApp(page);
+
+    const canvas = page.locator('#canvas');
+    const box = await canvas.boundingBox();
+
+    // Modo apagar ativo + posicionamento de comentário
+    await page.click('[data-mode="erase"]');
+    await page.fill('#commentText', 'Sem fantasma');
+    await page.click('#addCommentBtn');
+    await page.waitForTimeout(150);
+    await page.mouse.click(box.x + 300, box.y + 300);
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('#commentCount')).toHaveText('1');
+    await expect(page.locator('#eraseCount')).toHaveText('0'); // sem ação-fantasma
+});
+
+test('botão de visibilidade oculta os itens da track de verdade', async ({ page }) => {
+    await gotoApp(page);
+
+    const canvas = page.locator('#canvas');
+    const box = await canvas.boundingBox();
+    await page.mouse.move(box.x + 50, box.y + 50);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 150, box.y + 150, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+    await expect(page.locator('.timeline-item.draw')).toHaveCount(1);
+
+    // Oculta a track de desenhos
+    await page.click('[data-track="draw"][data-action="visibility"]');
+    await page.waitForTimeout(150);
+    await expect(page.locator('.timeline-item.draw')).toHaveCount(0);
+    await expect(page.locator('.timeline-track.hidden-track')).toHaveCount(1);
+
+    // O traço também some do canvas estático
+    const visible = await page.evaluate(() => {
+        const fa = window.flowAnimator;
+        const p = fa.actions[0].points[0];
+        const d = fa.ctx.getImageData(Math.round(p.x) + 2, Math.round(p.y) + 2, 1, 1).data;
+        return d[0] < 240 || d[1] < 240 || d[2] < 240; // não-branco = traço visível
+    });
+    expect(visible).toBe(false);
+});
+
+test('track travada bloqueia deleção via tecla Delete', async ({ page }) => {
+    await gotoApp(page);
+
+    const canvas = page.locator('#canvas');
+    const box = await canvas.boundingBox();
+    await page.mouse.move(box.x + 50, box.y + 50);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 150, box.y + 150, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    // Trava a track de desenhos
+    await page.click('[data-track="draw"][data-action="lock"]');
+    await page.waitForTimeout(100);
+
+    // Delete no item focado não deve remover nada (nem abrir modal)
+    await page.locator('.timeline-item.draw').first().focus();
+    await page.keyboard.press('Delete');
+    await page.waitForTimeout(200);
+    await expect(page.locator('.app-modal-overlay')).toHaveCount(0);
+    await expect(page.locator('#drawCount')).toHaveText('1');
+});
+
+test('arrastar item na timeline é desfazível com Ctrl+Z', async ({ page }) => {
+    await gotoApp(page);
+
+    const canvas = page.locator('#canvas');
+    const box = await canvas.boundingBox();
+    await page.mouse.move(box.x + 50, box.y + 50);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 150, box.y + 150, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    const before = await page.evaluate(() => window.flowAnimator.actions[0].startTime);
+
+    // Arrasta o item da timeline ~200px para a direita (com Shift para desativar snap)
+    const item = page.locator('.timeline-item.draw').first();
+    const ib = await item.boundingBox();
+    await page.keyboard.down('Shift');
+    await page.mouse.move(ib.x + ib.width / 2, ib.y + ib.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(ib.x + ib.width / 2 + 200, ib.y + ib.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await page.keyboard.up('Shift');
+    await page.waitForTimeout(200);
+
+    const after = await page.evaluate(() => window.flowAnimator.actions[0].startTime);
+    expect(after).toBeGreaterThan(before + 1); // moveu de verdade (200px ≈ 2s a 100px/s)
+
+    // Ctrl+Z restaura a posição original
+    await page.keyboard.press('Control+z');
+    await page.waitForTimeout(200);
+    const restored = await page.evaluate(() => window.flowAnimator.actions[0].startTime);
+    expect(restored).toBeCloseTo(before, 1);
+});
+
+test('exportar frames gera um único download .zip', async ({ page }) => {
+    await gotoApp(page);
+
+    const canvas = page.locator('#canvas');
+    const box = await canvas.boundingBox();
+    await page.mouse.move(box.x + 50, box.y + 50);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 150, box.y + 150, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    // Duração curtinha para o teste ser rápido (6 frames a 30fps)
+    await page.evaluate(() => { window.flowAnimator.totalAnimationTime = 0.2; });
+
+    const downloadPromise = page.waitForEvent('download', { timeout: 15000 });
+    await page.evaluate(() => window.flowAnimator.exportAsFrames());
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/^frames_\d+\.zip$/);
+});
+
+test('salvar/carregar via localStorage faz round-trip do projeto com fundo', async ({ page }) => {
+    await gotoApp(page);
+
+    const roundTrip = await page.evaluate(async () => {
+        const fa = window.flowAnimator;
+        // Simula um fundo carregado (imagem 100×80 vermelha)
+        const bg = document.createElement('canvas');
+        bg.width = fa.canvas.width; bg.height = fa.canvas.height;
+        const bctx = bg.getContext('2d');
+        bctx.fillStyle = '#cc2200';
+        bctx.fillRect(0, 0, bg.width, bg.height);
+        fa._setBackgroundFromImageData(bctx.getImageData(0, 0, bg.width, bg.height));
+
+        fa.actions.push({ type: 'draw', points: [{ x: 10, y: 10 }, { x: 20, y: 20 }], color: '#00f', width: 3, startTime: 1, duration: 2 });
+        fa.saveToLocalStorage();
+
+        // Zera o estado e recarrega
+        fa.actions = [];
+        fa._setBackgroundFromImageData(null);
+        fa.loadFromLocalStorage();
+        await new Promise(r => setTimeout(r, 300)); // decodificação assíncrona do fundo
+
+        const d = fa.ctx.getImageData(500, 500, 1, 1).data;
+        return {
+            actionsLen: fa.actions.length,
+            startTime: fa.actions[0] && fa.actions[0].startTime,
+            bgRestored: d[0] > 150 && d[1] < 100 // pixel vermelho do fundo restaurado
+        };
+    });
+
+    expect(roundTrip.actionsLen).toBe(1);
+    expect(roundTrip.startTime).toBe(1);
+    expect(roundTrip.bgRestored).toBe(true);
+});
+
+test('setas movem item focado da timeline e mantêm o foco', async ({ page }) => {
+    await gotoApp(page);
+
+    const canvas = page.locator('#canvas');
+    const box = await canvas.boundingBox();
+    await page.mouse.move(box.x + 50, box.y + 50);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 150, box.y + 150, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    const before = await page.evaluate(() => window.flowAnimator.actions[0].startTime);
+
+    await page.locator('.timeline-item.draw').first().focus();
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(150);
+
+    const after = await page.evaluate(() => window.flowAnimator.actions[0].startTime);
+    expect(after).toBeCloseTo(before + 0.1, 3);
+
+    // Foco continua no item (permite apertar a seta de novo)
+    const focusedIsItem = await page.evaluate(() => document.activeElement.classList.contains('timeline-item'));
+    expect(focusedIsItem).toBe(true);
+});

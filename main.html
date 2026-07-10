@@ -13,7 +13,7 @@
         <div class="header">
             <div class="header-controls">
                 <input type="file" id="pdfInput" style="display: none;" accept=".pdf,.jpg,.jpeg,.png">
-                <button class="btn btn-primary" onclick="document.getElementById('pdfInput').click()" data-i18n="btnImport">
+                <button class="btn btn-primary" id="importFileBtn" data-i18n="btnImport">
                     📁 Importar PDF/Imagem
                 </button>
                 
@@ -186,22 +186,22 @@
                 </div>
                 
                 <div class="emoji-picker">
-                    <span class="emoji-btn" onclick="insertEmoji('😊')">😊</span>
-                    <span class="emoji-btn" onclick="insertEmoji('😄')">😄</span>
-                    <span class="emoji-btn" onclick="insertEmoji('🎉')">🎉</span>
-                    <span class="emoji-btn" onclick="insertEmoji('⭐')">⭐</span>
-                    <span class="emoji-btn" onclick="insertEmoji('❤️')">❤️</span>
-                    <span class="emoji-btn" onclick="insertEmoji('👍')">👍</span>
-                    <span class="emoji-btn" onclick="insertEmoji('👎')">👎</span>
-                    <span class="emoji-btn" onclick="insertEmoji('🔥')">🔥</span>
-                    <span class="emoji-btn" onclick="insertEmoji('💡')">💡</span>
-                    <span class="emoji-btn" onclick="insertEmoji('✅')">✅</span>
-                    <span class="emoji-btn" onclick="insertEmoji('❌')">❌</span>
-                    <span class="emoji-btn" onclick="insertEmoji('⚠️')">⚠️</span>
-                    <span class="emoji-btn" onclick="insertEmoji('🚀')">🚀</span>
-                    <span class="emoji-btn" onclick="insertEmoji('📝')">📝</span>
-                    <span class="emoji-btn" onclick="insertEmoji('🎯')">🎯</span>
-                    <span class="emoji-btn" onclick="insertEmoji('💎')">💎</span>
+                    <button type="button" class="emoji-btn" data-emoji="😊" aria-label="Inserir emoji 😊">😊</button>
+                    <button type="button" class="emoji-btn" data-emoji="😄" aria-label="Inserir emoji 😄">😄</button>
+                    <button type="button" class="emoji-btn" data-emoji="🎉" aria-label="Inserir emoji 🎉">🎉</button>
+                    <button type="button" class="emoji-btn" data-emoji="⭐" aria-label="Inserir emoji ⭐">⭐</button>
+                    <button type="button" class="emoji-btn" data-emoji="❤️" aria-label="Inserir emoji ❤️">❤️</button>
+                    <button type="button" class="emoji-btn" data-emoji="👍" aria-label="Inserir emoji 👍">👍</button>
+                    <button type="button" class="emoji-btn" data-emoji="👎" aria-label="Inserir emoji 👎">👎</button>
+                    <button type="button" class="emoji-btn" data-emoji="🔥" aria-label="Inserir emoji 🔥">🔥</button>
+                    <button type="button" class="emoji-btn" data-emoji="💡" aria-label="Inserir emoji 💡">💡</button>
+                    <button type="button" class="emoji-btn" data-emoji="✅" aria-label="Inserir emoji ✅">✅</button>
+                    <button type="button" class="emoji-btn" data-emoji="❌" aria-label="Inserir emoji ❌">❌</button>
+                    <button type="button" class="emoji-btn" data-emoji="⚠️" aria-label="Inserir emoji ⚠️">⚠️</button>
+                    <button type="button" class="emoji-btn" data-emoji="🚀" aria-label="Inserir emoji 🚀">🚀</button>
+                    <button type="button" class="emoji-btn" data-emoji="📝" aria-label="Inserir emoji 📝">📝</button>
+                    <button type="button" class="emoji-btn" data-emoji="🎯" aria-label="Inserir emoji 🎯">🎯</button>
+                    <button type="button" class="emoji-btn" data-emoji="💎" aria-label="Inserir emoji 💎">💎</button>
                 </div>
                 
                 <div class="section-header" style="margin-top: 20px;" data-i18n="sectionAnimation">⚙️ Configurações de Animação</div>
@@ -264,7 +264,6 @@
                 </div>
                 
                 <div style="display: flex; gap: 10px;">
-                    <button class="btn btn-success" id="addTrackBtn">➕ Nova Track</button>
                     <button class="btn btn-danger" id="clearTimelineBtn">🗑️ Limpar Timeline</button>
                 </div>
             </div>
@@ -321,7 +320,7 @@
     
     <div class="tooltip" id="tooltip"></div>
     
-    <div class="sandbox-notice" id="sandboxNotice" onclick="this.style.display='none'" data-i18n="sandboxNotice">
+    <div class="sandbox-notice" id="sandboxNotice" data-i18n="sandboxNotice">
         ⚠️ Modo Sandbox - Use Exportar/Importar JSON para salvar
     </div>
 
@@ -332,6 +331,7 @@
 
     <script src="js/i18n.js"></script>
     <script src="js/modal.js"></script>
+    <script src="js/zip.js"></script>
     <script src="js/timeline-pro.js"></script>
     <script src="js/flow-animator.js"></script>
     <script src="js/main.js"></script>
