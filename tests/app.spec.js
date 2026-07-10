@@ -428,6 +428,34 @@ test('modo timeline: limpar conteúdo pré-existente não deixa piso de gravaç�
     await page.evaluate(() => window.flowAnimator.exitTimelineMode());
 });
 
+test('modo timeline: a agulha não avança sozinha quando ocioso (regressão)', async ({ page }) => {
+    await gotoApp(page);
+
+    const box = await page.locator('#canvas').boundingBox();
+    await page.evaluate(() => window.flowAnimator.enterTimelineMode());
+
+    // Logo após entrar, sem desenhar nada: a agulha deve ficar parada (não correr até o fim)
+    const enter1 = await page.evaluate(() => window.flowAnimator.animationProgress);
+    await page.waitForTimeout(500);
+    const enter2 = await page.evaluate(() => window.flowAnimator.animationProgress);
+    expect(enter2).toBe(enter1);
+
+    // Desenha um traço e fica ocioso: a agulha deve parar no fim do traço, não avançar
+    await page.mouse.move(box.x + 40, box.y + 40);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 120, box.y + 120, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(80);
+
+    const draw1 = await page.evaluate(() => window.flowAnimator.animationProgress);
+    await page.waitForTimeout(500);
+    const draw2 = await page.evaluate(() => window.flowAnimator.animationProgress);
+    // Regressão: antes, o relógio seguia correndo na pausa e a agulha ia até o fim
+    expect(draw2).toBe(draw1);
+
+    await page.evaluate(() => window.flowAnimator.exitTimelineMode());
+});
+
 test('posicionar comentário em modo apagar não cria ação-fantasma', async ({ page }) => {
     await gotoApp(page);
 

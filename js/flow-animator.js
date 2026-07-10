@@ -914,8 +914,9 @@
                     const totalInput = document.getElementById('totalDuration');
                     if (totalInput) totalInput.value = this.totalAnimationTime;
                 }
-                // Relógio segue do novo cursor (a agulha continua a andar durante a pausa).
-                this._startRecordClock(this._recordCursor);
+                // Fim do traço: para o relógio e deixa a agulha parada no fim deste traço
+                // (base do próximo). Ela não avança sozinha durante a pausa.
+                this._stopRecordClock();
                 this._seekNeedle(this._recordCursor);
             }
 
@@ -1817,25 +1818,23 @@
         };
 
         // Relógio de gravação: um loop de rAF que faz a agulha correr em tempo real
-        // (1 s de relógio = 1 s na timeline). Só move o playhead — nunca re-renderiza o
-        // canvas — então convive sem conflito com o desenho ao vivo (redrawWithCurrentPath).
-        // `baseSeconds` é a posição da agulha no instante em que o relógio (re)começa.
+        // (1 s de relógio = 1 s na timeline) enquanto o usuário está desenhando um traço.
+        // Só move o playhead — nunca re-renderiza o canvas — então convive sem conflito
+        // com o desenho ao vivo (redrawWithCurrentPath). O loop se auto-encerra assim que
+        // o traço termina (`isDrawing` vira false): fora do traço a agulha fica PARADA no
+        // ponto onde o próximo traço vai começar, em vez de avançar sozinha durante a pausa.
+        // `baseSeconds` é a posição da agulha no início do traço.
         FlowAnimator.prototype._startRecordClock = function(baseSeconds) {
             this._recordBase = baseSeconds;
             this._recordClockRef = Date.now();
             if (this._recordRAF) cancelAnimationFrame(this._recordRAF);
 
             const tick = () => {
-                if (!this.timelineMode) { this._recordRAF = null; return; }
-                if (this.isPlaying) {
-                    // Durante o play(), o loop animate() é dono da agulha; só mantemos o
-                    // relógio sincronizado para retomar suave quando a reprodução parar.
-                    this._recordBase = this.animationProgress * this.totalAnimationTime;
-                    this._recordClockRef = Date.now();
-                } else {
-                    const elapsed = (Date.now() - this._recordClockRef) / 1000;
-                    this._seekNeedle(this._recordBase + elapsed);
-                }
+                this._recordRAF = null;
+                // Só avança durante um traço ativo; o play() (se rodando) é dono da agulha.
+                if (!this.timelineMode || this.isPlaying || !this.isDrawing) return;
+                const elapsed = (Date.now() - this._recordClockRef) / 1000;
+                this._seekNeedle(this._recordBase + elapsed);
                 this._recordRAF = requestAnimationFrame(tick);
             };
             this._recordRAF = requestAnimationFrame(tick);
@@ -1859,10 +1858,11 @@
             // dentro do modo deixaria um piso obsoleto e reabriria o vão) — ele entra
             // dinamicamente via _lastContentEnd() dentro de _nextRecordStart().
             this._recordFloor = this.animationProgress * this.totalAnimationTime;
-            // Agulha começa após o conteúdo existente (ou no offset, o que for maior).
+            // Agulha começa após o conteúdo existente (ou no offset, o que for maior) e
+            // fica PARADA ali — o relógio só corre enquanto um traço está sendo desenhado
+            // (ver startDrawing), então a agulha não avança sozinha durante a pausa.
             this._recordCursor = this._nextRecordStart();
             this._seekNeedle(this._recordCursor);
-            this._startRecordClock(this._recordCursor);
 
             // Mostrar overlay com instruções
             const overlay = document.createElement('div');
