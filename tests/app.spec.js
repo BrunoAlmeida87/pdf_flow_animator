@@ -317,6 +317,44 @@ test('play() duplo não deixa a Promise do export pendurada', async ({ page }) =
     expect(resolved).toBe(true);
 });
 
+test('modo timeline grava traços em sequência, não empilhados no mesmo tempo (regressão)', async ({ page }) => {
+    await gotoApp(page);
+
+    const canvas = page.locator('#canvas');
+    const box = await canvas.boundingBox();
+
+    // Ativa o modo gravação (a agulha passa a correr e os traços entram em sequência)
+    await page.evaluate(() => window.flowAnimator.enterTimelineMode());
+
+    // Primeiro traço
+    await page.mouse.move(box.x + 40, box.y + 40);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 120, box.y + 120, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+
+    // Segundo traço, após uma pausa (a pausa deve ser ignorada no modo sequencial)
+    await page.mouse.move(box.x + 160, box.y + 60);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 260, box.y + 160, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+
+    const actions = await page.evaluate(() =>
+        window.flowAnimator.actions.map(a => ({ startTime: a.startTime, duration: a.duration }))
+    );
+    expect(actions).toHaveLength(2);
+
+    // Primeiro traço começa em 0
+    expect(actions[0].startTime).toBe(0);
+    // Segundo começa exatamente no fim do primeiro — sequencial, sem espaço vazio
+    expect(actions[1].startTime).toBeCloseTo(actions[0].startTime + actions[0].duration, 5);
+    // Regressão: antes do fix ambos ganhavam o mesmo startTime (agulha parada) e ficavam empilhados em 0
+    expect(actions[1].startTime).toBeGreaterThan(0);
+
+    await page.evaluate(() => window.flowAnimator.exitTimelineMode());
+});
+
 test('posicionar comentário em modo apagar não cria ação-fantasma', async ({ page }) => {
     await gotoApp(page);
 

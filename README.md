@@ -19,6 +19,7 @@ Abra **[`main.html`](./main.html)** em um navegador moderno para usar.
   - Ocultar (👁️) uma track — os itens somem da timeline, do canvas e da animação — e travar (🔒) uma track contra mover/redimensionar/deletar.
   - Zoom, régua de tempo e playhead sincronizados também com o scroll horizontal.
   - Itens navegáveis por teclado: `Tab` foca, `←`/`→` deslocam ±0,1s (`Shift` = ±1s), `Delete`/`Backspace` remove.
+- **Modo Timeline (gravação)** 🎬: ao ativar, a agulha de edição passa a correr em tempo real e cada traço desenhado é gravado **em sequência**, logo após o anterior — suas pausas para pensar não viram espaços vazios na reprodução. É a forma rápida de "gravar" uma explicação traço a traço sem ajustar o tempo de cada um na mão. A duração total se estende sozinha conforme você desenha.
 - **Reprodução** com velocidade ajustável (inclusive durante o playback, sem salto do playhead) e opção de manter (ou não) os traços após a animação passar por eles.
 - **Desfazer / Refazer** (`Ctrl+Z` / `Ctrl+Y`), com histórico de até 30 estados — cobre também mover/redimensionar itens da timeline e arrastar comentários no canvas.
 - **Seleção de região (crop)** do canvas para exportar apenas uma área específica em vídeo.
