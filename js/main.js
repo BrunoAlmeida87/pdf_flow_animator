@@ -1,5 +1,5 @@
-        // Configurar PDF.js
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        // Configurar PDF.js (vendorizado em vendor/pdfjs/ — funciona offline e via file://)
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.min.js';
 
         // Função auxiliar para inserir emoji
         function insertEmoji(emoji) {
@@ -79,17 +79,17 @@
                 document.getElementById('statusInfo').textContent = 
                     '✅ Pronto! Alt = linha reta | Espaço = Play/Pause | Ctrl+Z = Desfazer | Ctrl+Y = Refazer';
                 
-                // Verificar suporte para exportação de vídeo
-                setTimeout(function() {
-                    if (!window.MediaRecorder) {
-                        document.getElementById('exportFramesBtn').style.display = 'inline-block';
-                        console.log('MediaRecorder não disponível. Use exportação de frames.');
-                        flowAnimator.showTooltip('🧽 APAGADOR CORRIGIDO! Agora preserva fundo durante animação.');
-                    } else {
-                        console.log('✅ Apagador totalmente corrigido!');
-                    flowAnimator.showTooltip('📐 Shift = snap 45° | Alt = linha livre | Ctrl+Z = Desfazer');
-                    }
-                }, 1000);
+                // Sem MediaRecorder não há exportação de vídeo: oferece a de frames
+                if (!window.MediaRecorder) {
+                    document.getElementById('exportFramesBtn').style.display = 'inline-block';
+                }
+
+                // Canvas inicial (quadro branco 1920×1080) já ajustado à área visível
+                flowAnimator.fitToScreen();
+                window.addEventListener('resize', () => {
+                    clearTimeout(flowAnimator._resizeFitTimer);
+                    flowAnimator._resizeFitTimer = setTimeout(() => flowAnimator.fitToScreen(), 150);
+                });
                 
                 // Otimizar performance a cada 30 segundos, usando requestIdleCallback se disponível
                 setInterval(function() {

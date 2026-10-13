@@ -10,13 +10,18 @@
             color: #e0e0e0;
             overflow: hidden;
             height: 100vh;
+            /* Coluna: app + barra de status no fluxo (antes a barra era position:fixed e
+               cobria os últimos 25px da timeline) */
+            display: flex;
+            flex-direction: column;
         }
 
         /* Layout Principal */
         .app-container {
             display: flex;
             flex-direction: column;
-            height: 100vh;
+            flex: 1;
+            min-height: 0;
         }
 
         /* Header */
@@ -45,6 +50,9 @@
         /* Canvas Area */
         .canvas-area {
             flex: 1;
+            /* min-width: 0 — sem isso o canvas de 1920px impunha a largura mínima do flex item
+               e empurrava a sidebar (e os botões de zoom) para fora da tela ao abrir o app */
+            min-width: 0;
             display: flex;
             flex-direction: column;
             background: #0a0a0a;
@@ -61,6 +69,8 @@
 
         .canvas-viewport {
             flex: 1;
+            min-height: 0;
+            min-width: 0;
             position: relative;
             overflow: hidden;
             display: flex;
@@ -152,8 +162,16 @@
             width: 200px;
             background: #1a1a1a;
             border-right: 1px solid #3a3a3a;
-            overflow-y: auto;
+            /* rola junto com as tracks (sincronizado via JS), sem barra própria */
+            overflow: hidden;
             flex-shrink: 0;
+        }
+
+        /* Canto alinhado à régua: headers começam na mesma altura das tracks */
+        .track-headers-corner {
+            height: 40px;
+            border-bottom: 1px solid #3a3a3a;
+            background: #2a2a2a;
         }
 
         .timeline-content-area {
@@ -194,17 +212,26 @@
 
         /* Track Styles */
         .track-header {
-            height: 60px;
+            position: relative;
+            box-sizing: border-box;
             background: #1a1a1a;
             border-bottom: 1px solid #2a2a2a;
-            padding: 10px;
+            padding: 6px 10px;
             display: flex;
             align-items: center;
             justify-content: space-between;
+            gap: 6px;
         }
 
         .track-info {
             flex: 1;
+            min-width: 0;
+        }
+
+        .track-parallel-badge {
+            color: #2ecc71;
+            font-size: 10px;
+            white-space: nowrap;
         }
 
         .track-name {
@@ -216,7 +243,10 @@
 
         .track-type {
             font-size: 10px;
-            color: #888;
+            color: #999;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .track-controls {
@@ -248,10 +278,10 @@
 
         /* Timeline Tracks - MELHORADO para layers paralelas */
         .timeline-track {
+            box-sizing: border-box;
             background: #1a1a1a;
             border-bottom: 1px solid #2a2a2a;
             position: relative;
-            min-height: 60px;
         }
 
         .timeline-track:hover {
@@ -281,18 +311,13 @@
         }
 
         /* Layers paralelas */
+        /* Uma lane por camada de itens sobrepostos — top/height definidos via JS
+           (TimelinePro.LANE_HEIGHT), então nenhuma camada cobre a outra */
         .timeline-layer {
             position: absolute;
+            left: 0;
             width: 100%;
-            height: 50px;
-            top: 0;
         }
-
-        .timeline-layer.layer-0 { top: 5px; z-index: 10; }
-        .timeline-layer.layer-1 { top: 15px; z-index: 9; }
-        .timeline-layer.layer-2 { top: 25px; z-index: 8; }
-        .timeline-layer.layer-3 { top: 35px; z-index: 7; }
-        .timeline-layer.layer-4 { top: 45px; z-index: 6; }
 
         /* Timeline Items com layers */
 
@@ -392,49 +417,6 @@
             background: rgba(0, 0, 0, 0.9);
         }
 
-        /* Track expandida para mostrar layers */
-        .timeline-track.expanded {
-            min-height: 120px;
-        }
-
-        .timeline-track.expanded .timeline-layer.layer-0 { top: 5px; }
-        .timeline-track.expanded .timeline-layer.layer-1 { top: 25px; }
-        .timeline-track.expanded .timeline-layer.layer-2 { top: 45px; }
-        .timeline-track.expanded .timeline-layer.layer-3 { top: 65px; }
-        .timeline-track.expanded .timeline-layer.layer-4 { top: 85px; }
-
-        /* Botão de expandir track */
-        .track-expand-btn {
-            position: absolute;
-            right: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 20px;
-            height: 20px;
-            background: #3a3a3a;
-            color: #aaa;
-            border: none;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 10px;
-            display: none;
-        }
-
-        .track-header:hover .track-expand-btn,
-        .track-header:focus-within .track-expand-btn {
-            display: block;
-        }
-
-        .track-expand-btn:hover {
-            background: #4a90e2;
-            color: white;
-        }
-
-        .track-expand-btn.expanded {
-            background: #4a90e2;
-            color: white;
-        }
-
         /* Destaque para ciclo de seleção */
         .timeline-item.cycle-highlight {
             animation: cycleFlash 0.5s ease-in-out;
@@ -459,8 +441,8 @@
         /* Timeline Items */
         .timeline-item {
             position: absolute;
-            height: 50px;
-            top: 5px;
+            height: 40px;
+            top: 3px;
             border-radius: 4px;
             cursor: move;
             display: flex;
@@ -797,10 +779,7 @@
 
         /* Status and Indicators */
         .status-bar {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
+            flex-shrink: 0;
             background: #1a1a1a;
             border-top: 1px solid #3a3a3a;
             padding: 5px 15px;
@@ -874,8 +853,11 @@
             to { opacity: 1; transform: translateY(0); }
         }
 
+        /* Aviso (toast): posicionado via JS no rodapé da área do canvas, para não cobrir o
+           centro do desenho */
         .tooltip {
             position: fixed;
+            transform: translateX(-50%);
             background: rgba(0, 0, 0, 0.9);
             color: white;
             padding: 8px 12px;

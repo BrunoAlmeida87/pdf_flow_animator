@@ -18,7 +18,7 @@ npx playwright install --with-deps chromium   # só na primeira vez / se os brow
 npx playwright test
 ```
 
-Os testes ficam em `tests/app.spec.js` e cobrem: carregamento sem erros, desenhar, apagar, adicionar comentário, undo/redo, e uma regressão do fix de XSS via importação de JSON. Eles interceptam as URLs do PDF.js (CDN) com um stub, então rodam offline/determinísticos em qualquer ambiente.
+Os testes ficam em `tests/app.spec.js` e cobrem desenhar, apagar, comentar, undo/redo, timeline, exportação, persistência, layout e regressões de bugs/segurança (XSS via JSON, CVE-2024-4367 do PDF.js). O PDF.js é vendorizado em `vendor/pdfjs/`, então os testes rodam offline e importam um PDF real (`tests/fixtures/sample.pdf`).
 
 Antes de abrir o PR, valide também a sintaxe de cada arquivo `.js` e o markup:
 
@@ -55,4 +55,4 @@ O workflow de CI (`.github/workflows/validate-html.yml`) roda tudo isso automati
 
 - Mensagens de UI, tooltips e comentários voltados ao usuário final: em português (pt-BR) por padrão; strings de UI estática também devem ganhar tradução em inglês via `js/i18n.js` quando fizer sentido.
 - Nomes de função/variável/classe: em inglês.
-- Sem dependências externas de runtime além do PDF.js já carregado via CDN — evite adicionar novas bibliotecas de runtime sem discutir antes. Dependências de desenvolvimento (`devDependencies` em `package.json`, ex. Playwright) são aceitáveis desde que não afetem o uso do app em si.
+- Dependências de runtime ficam **vendorizadas** em `vendor/` (com a licença ao lado) e carregadas por `<script>` clássico — nunca via CDN nem `type="module"`. Evite adicionar novas sem discutir antes. Dependências de desenvolvimento (`devDependencies` em `package.json`, ex. Playwright) são aceitáveis desde que não afetem o uso do app em si.

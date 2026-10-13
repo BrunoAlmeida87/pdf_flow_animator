@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Animador de Fluxo de Diagramas PDF - Timeline Pro</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="vendor/pdfjs/pdf.min.js"></script>
     <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
@@ -225,13 +225,12 @@
                 
                 <div class="section-header" style="margin-top: 20px;" data-i18n="sectionTimeline">🎬 Sistema de Timeline Avançado</div>
                 <div style="font-size: 11px; line-height: 1.4; color: #aaa; background: #1a1a1a; padding: 10px; border-radius: 4px; border-left: 3px solid #4a90e2;">
-                    <strong style="color: #4a90e2;">📍 NOVO! Visualização de Items Paralelos:</strong><br>
-                    • <strong>🔢 Números nas sobreposições:</strong> Mostram quantos items estão no mesmo tempo<br>
-                    • <strong>🔄 Clique no número:</strong> Cicla entre items sobrepostos<br>
-                    • <strong>🎯 Duplo-clique:</strong> Foca e posiciona timeline no item<br>
-                    • <strong>▶ Expandir tracks:</strong> Mostra layers separadas para items paralelos<br>
-                    • <strong>📊 Info detalhada:</strong> Tooltips mostram tempo, duração e layer<br>
-                    <strong style="color: #27ae60;">⚡ Agora você consegue selecionar facilmente!</strong>
+                    <strong style="color: #4a90e2;">📍 Itens paralelos:</strong><br>
+                    • Itens que acontecem ao mesmo tempo ganham <strong>linhas próprias</strong> na track<br>
+                    • <strong>Arrastar:</strong> move no tempo (snap de 0,5s; <strong>Shift</strong> desliga)<br>
+                    • <strong>Bordas:</strong> redimensionam a duração<br>
+                    • <strong>Duplo-clique:</strong> leva a agulha até o item<br>
+                    • <strong>Tab + ←/→:</strong> move o item focado (Shift = 1s); <strong>Delete</strong> remove
                 </div>
                 
                 <div class="section-header" style="margin-top: 20px;" data-i18n="sectionStats">📊 Estatísticas</div>
@@ -239,7 +238,7 @@
                     <div>Desenhos: <span id="drawCount">0</span></div>
                     <div>Apagadas: <span id="eraseCount">0</span></div>
                     <div>Comentários: <span id="commentCount">0</span></div>
-                    <div>Duração Real: <span id="realDuration">0s</span></div>
+                    <div>Fim do conteúdo: <span id="realDuration">0s</span></div>
                 </div>
             </div>
         </div>
@@ -318,7 +317,7 @@
         <div id="progressText">0%</div>
     </div>
     
-    <div class="tooltip" id="tooltip"></div>
+    <div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
     
     <div class="sandbox-notice" id="sandboxNotice" data-i18n="sandboxNotice">
         ⚠️ Modo Sandbox - Use Exportar/Importar JSON para salvar

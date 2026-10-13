@@ -34,44 +34,51 @@
                 const container = document.getElementById('trackHeaders');
                 container.innerHTML = '';
                 
+                // Espaçador da altura da régua: sem ele os headers começavam 40px acima das
+                // tracks correspondentes (a régua só existe na coluna da direita)
+                const corner = document.createElement('div');
+                corner.className = 'track-headers-corner';
+                container.appendChild(corner);
+
                 this.tracks.forEach(track => {
                     // Verificar se há ações paralelas nesta track
                     const hasParallelActions = this.checkParallelActions(track);
                     const parallelCount = this.getParallelActionsCount(track);
-                    const layeredItems = this.organizeItemsInLayers(track.items);
-                    const layerCount = layeredItems.length;
-                    
+                    const layerCount = this.organizeItemsInLayers(track.items).length;
+                    const typeInfo = `${track.items.length} ${track.items.length === 1 ? 'item' : 'itens'}` +
+                        (parallelCount > 1 ? ` · ${parallelCount} simultâneos` : '') +
+                        (layerCount > 1 ? ` · ${layerCount} camadas` : '');
+
                     const header = document.createElement('div');
                     header.className = 'track-header';
+                    header.style.height = this._trackHeight(track) + 'px';
                     header.innerHTML = `
                         <div class="track-info">
                             <div class="track-name" style="color: ${track.color}">
                                 ${track.name}
-                                ${hasParallelActions ? '<span style="color: #27ae60; font-size: 10px;">⚡ PARALELO</span>' : ''}
+                                ${hasParallelActions ? '<span class="track-parallel-badge">⚡ PARALELO</span>' : ''}
                             </div>
-                            <div class="track-type">
-                                ${track.items.length} items
-                                ${parallelCount > 1 ? ` | ${parallelCount} simultâneos` : ''}
-                                ${layerCount > 1 ? ` | ${layerCount} layers` : ''}
-                            </div>
+                            <div class="track-type" title="${typeInfo}">${typeInfo}</div>
                         </div>
                         <div class="track-controls">
-                            <button class="track-btn ${track.visible ? 'active' : ''}" title="Visibilidade" data-track="${track.id}" data-action="visibility">
+                            <button class="track-btn ${track.visible ? 'active' : ''}" title="Visibilidade" aria-label="Visibilidade da track ${track.name}" aria-pressed="${track.visible ? 'true' : 'false'}" data-track="${track.id}" data-action="visibility">
                                 👁️
                             </button>
-                            <button class="track-btn ${track.locked ? 'active' : ''}" title="Travar" data-track="${track.id}" data-action="lock">
+                            <button class="track-btn ${track.locked ? 'active' : ''}" title="Travar" aria-label="Travar track ${track.name}" aria-pressed="${track.locked ? 'true' : 'false'}" data-track="${track.id}" data-action="lock">
                                 🔒
                             </button>
-                            ${hasParallelActions ? `
-                                <button class="track-expand-btn ${track.expanded ? 'expanded' : ''}" title="Expandir layers" data-track="${track.id}" data-action="expand">
-                                    ${track.expanded ? '▼' : '▶'}
-                                </button>
-                            ` : ''}
-                            ${hasParallelActions ? '<div class="track-parallel-indicator active" title="Track com ações paralelas"></div>' : ''}
                         </div>
                     `;
                     container.appendChild(header);
                 });
+            }
+
+            // Altura de uma track: uma "lane" por camada de itens sobrepostos. Antes as camadas
+            // eram empilhadas com 10px de deslocamento numa faixa de altura fixa e só o
+            // primeiro item ficava legível. Headers e tracks usam a mesma altura.
+            _trackHeight(track) {
+                const layers = track.visible === false ? 1 : Math.max(1, this.organizeItemsInLayers(track.items).length);
+                return TimelinePro.TRACK_PADDING * 2 + layers * TimelinePro.LANE_HEIGHT;
             }
 
             // Sweep-line O(n log n): verifica se há qualquer sobreposição temporal
@@ -175,7 +182,7 @@
                 // Skip: se nada visível mudou desde o último render, não reconstruir o DOM
                 // (evita churn de listeners e flicker em refresh() sem mudança real)
                 const signature = this.zoom + '|' + this.tracks.map(t =>
-                    `${t.id}:${t.visible}:${t.expanded ? 1 : 0}:` +
+                    `${t.id}:${t.visible}:` +
                     t.items.map(i => `${i.id},${i.startTime},${i.duration}`).join(';')
                 ).join('||');
 
@@ -202,6 +209,7 @@
                     const trackEl = document.createElement('div');
                     trackEl.className = 'timeline-track';
                     trackEl.dataset.trackId = track.id;
+                    trackEl.style.height = this._trackHeight(track) + 'px';
 
                     // Track oculta: mostra a linha esmaecida, sem itens
                     if (track.visible === false) {
@@ -222,9 +230,13 @@
                     layeredItems.forEach((layerItems, layerIndex) => {
                         const layerEl = document.createElement('div');
                         layerEl.className = `timeline-layer layer-${layerIndex}`;
+                        layerEl.style.top = (TimelinePro.TRACK_PADDING + layerIndex * TimelinePro.LANE_HEIGHT) + 'px';
+                        layerEl.style.height = TimelinePro.LANE_HEIGHT + 'px';
 
-                        layerItems.forEach((item, itemIndex) => {
-                            const itemEl = this.createTimelineItem(item, track, itemIndex, layerIndex, layerItems.length > 1);
+                        layerItems.forEach((item) => {
+                            // Numeração pela ordem na track inteira (antes: índice dentro da
+                            // camada, então itens paralelos apareciam todos como "Desenho 1")
+                            const itemEl = this.createTimelineItem(item, track, track.items.indexOf(item));
                             layerEl.appendChild(itemEl);
                         });
 
@@ -269,49 +281,6 @@
                 const end1 = item1.startTime + item1.duration;
                 const end2 = item2.startTime + item2.duration;
                 return !(item1.startTime >= end2 || item2.startTime >= end1);
-            }
-
-            // NOVA FUNÇÃO: Ciclar entre items sobrepostos
-            cycleOverlappingItems(timePosition, trackId) {
-                const track = this.tracks.find(t => t.id === trackId);
-                if (!track) return;
-                
-                // Encontrar todos os items que se sobrepõem nesta posição
-                const overlappingItems = track.items.filter(item => {
-                    const itemEnd = item.startTime + item.duration;
-                    return timePosition >= item.startTime && timePosition < itemEnd;
-                });
-                
-                if (overlappingItems.length <= 1) return;
-                
-                // Encontrar item atualmente selecionado
-                let currentIndex = overlappingItems.findIndex(item => {
-                    const el = document.querySelector(`[data-item-id="${item.id}"]`);
-                    return el && el.classList.contains('selected');
-                });
-                
-                // Ir para o próximo item no ciclo
-                currentIndex = (currentIndex + 1) % overlappingItems.length;
-                const nextItem = overlappingItems[currentIndex];
-                
-                // Limpar seleções anteriores
-                document.querySelectorAll('.timeline-item.selected').forEach(el => {
-                    el.classList.remove('selected');
-                });
-                
-                // Selecionar novo item
-                const nextEl = document.querySelector(`[data-item-id="${nextItem.id}"]`);
-                if (nextEl) {
-                    nextEl.classList.add('selected', 'cycle-highlight');
-                    
-                    // Remover highlight após animação
-                    setTimeout(() => {
-                        nextEl.classList.remove('cycle-highlight');
-                    }, 500);
-                    
-                    // Mostrar tooltip informativo
-                    this.animator.showTooltip(`Item ${currentIndex + 1}/${overlappingItems.length} selecionado`);
-                }
             }
 
             // Track de um tipo está visível? (usado pelo motor de render do FlowAnimator)
@@ -645,7 +614,7 @@
                 
                 // Track controls
                 document.getElementById('trackHeaders').addEventListener('click', (e) => {
-                    const btn = e.target.closest('.track-btn, .track-expand-btn');
+                    const btn = e.target.closest('.track-btn');
                     if (!btn) return;
                     
                     const trackId = btn.dataset.track;
@@ -664,18 +633,7 @@
                     } else if (action === 'lock') {
                         track.locked = !track.locked;
                         btn.classList.toggle('active');
-                    } else if (action === 'expand') {
-                        track.expanded = !track.expanded;
-                        btn.classList.toggle('expanded');
-                        btn.textContent = track.expanded ? '▼' : '▶';
-                        
-                        // Atualizar visual da track
-                        const trackEl = document.querySelector(`[data-track-id="${trackId}"]`);
-                        if (trackEl) {
-                            trackEl.classList.toggle('expanded', track.expanded);
-                        }
-                        
-                        this.animator.showTooltip(track.expanded ? 'Track expandida' : 'Track recolhida');
+                        this.animator.showTooltip(track.locked ? `🔒 Track "${track.name}" travada` : `🔓 Track "${track.name}" destravada`);
                     }
                     
                     this.renderTrackHeaders();
@@ -698,7 +656,14 @@
                 // Sincronizar régua/playhead com o scroll horizontal das tracks;
                 // rolagem manual (wheel) suprime o auto-scroll do playhead por 2s
                 const scrollableEl = document.getElementById('timelineScrollable');
-                scrollableEl.addEventListener('scroll', () => this.syncRulerScroll());
+                scrollableEl.addEventListener('scroll', () => {
+                    this.syncRulerScroll();
+                    // Headers acompanham a rolagem vertical das tracks (alturas agora variam)
+                    document.getElementById('trackHeaders').scrollTop = scrollableEl.scrollTop;
+                });
+                document.getElementById('trackHeaders').addEventListener('wheel', (e) => {
+                    scrollableEl.scrollTop += e.deltaY;
+                }, { passive: true });
                 scrollableEl.addEventListener('wheel', () => {
                     this._userScrollUntil = Date.now() + 2000;
                 }, { passive: true });
@@ -978,21 +943,10 @@
             }
 
             refresh() {
-                // Manter estado de expansão das tracks
-                const expandedTracks = this.tracks.filter(t => t.expanded).map(t => t.id);
-                
                 this.setupTimeline();
-                
-                // Restaurar estado de expansão
-                expandedTracks.forEach(trackId => {
-                    const track = this.tracks.find(t => t.id === trackId);
-                    if (track) {
-                        track.expanded = true;
-                        const trackEl = document.querySelector(`[data-track-id="${trackId}"]`);
-                        if (trackEl) {
-                            trackEl.classList.add('expanded');
-                        }
-                    }
-                });
             }
         }
+
+        // Geometria das lanes (px): cada camada de itens sobrepostos ganha sua própria linha
+        TimelinePro.LANE_HEIGHT = 46;
+        TimelinePro.TRACK_PADDING = 6;

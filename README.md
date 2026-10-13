@@ -38,7 +38,7 @@ Não há build nem servidor para rodar o app em si:
 2. Abra `main.html` diretamente no navegador (duplo clique ou `Ctrl+O`).
 3. Importe um PDF ou imagem pelo botão "📁 Importar PDF/Imagem".
 
-**Requisitos do navegador**: qualquer navegador moderno com suporte a Canvas 2D. Para exportar vídeo é necessário suporte a `MediaRecorder` (Chrome, Edge, Firefox — quando ausente, o app oferece automaticamente a exportação por frames PNG; suporte a MP4 dentro do `MediaRecorder` varia por navegador, sem garantia universal). O carregamento de PDF depende de acesso à internet, pois a biblioteca PDF.js é carregada via CDN (veja [Limitações conhecidas](#limitações-conhecidas)).
+**Requisitos do navegador**: qualquer navegador moderno com suporte a Canvas 2D. Para exportar vídeo é necessário suporte a `MediaRecorder` (Chrome, Edge, Firefox — quando ausente, o app oferece automaticamente a exportação por frames PNG; suporte a MP4 dentro do `MediaRecorder` varia por navegador, sem garantia universal). O PDF.js é vendorizado no repositório, então importar PDF funciona offline.
 
 (Instalar dependências via `npm` só é necessário para **desenvolver/testar** o projeto, não para usá-lo — veja [Contribuindo](#contribuindo).)
 
@@ -100,7 +100,7 @@ Há uma suíte automatizada com [Playwright](https://playwright.dev/) cobrindo d
 
 ## Limitações conhecidas
 
-- **Dependência externa via CDN sem verificação de integridade**: o PDF.js é carregado de `cdnjs.cloudflare.com` sem hash de Subresource Integrity (SRI) e sem fallback local — sem internet, a importação de PDF não funciona (imagens continuam funcionando normalmente). **Não implementado nesta rodada**: o ambiente de desenvolvimento usado bloqueia rede para esse domínio, então não foi possível baixar o arquivo real para gerar um hash SRI verificado nem vendorizá-lo localmente — inventar um hash não verificado quebraria o carregamento de PDF para todo mundo caso não bata exatamente. Para completar isso: baixe `pdf.min.js`/`pdf.worker.min.js` da versão usada (3.11.174) e gere o hash com `openssl dgst -sha384 -binary pdf.min.js | openssl base64 -A`, adicionando `integrity="sha384-..."` e `crossorigin="anonymous"` na tag `<script>` em `main.html` — ou vendorize os arquivos em `vendor/pdfjs/` e aponte o `src` para lá.
+- **PDF.js 3.11.174 vendorizado** em `vendor/pdfjs/` (sem CDN — funciona offline e via `file://`), com `isEvalSupported: false` para fechar a [CVE-2024-4367](https://security-tracker.debian.org/tracker/CVE-2024-4367) sem migrar para o PDF.js 4+ (que só é distribuído como ES module, incompatível com `file://`). Os cMaps (fontes CJK) vêm da cópia local quando servido por HTTP(S); em `file://` o Chrome bloqueia `fetch` local, então eles vêm da CDN.
 - **i18n cobre a UI estática** (botões, labels, headers de seção), mas não 100% das strings dinâmicas interpoladas (tooltips com valores, mensagens de status) — essas continuam só em pt-BR.
 - **Suporte a MP4 no `MediaRecorder` varia por navegador** — quando indisponível, a exportação cai automaticamente para WebM; não há transcodificação embutida (tipo ffmpeg.wasm) neste escopo.
 - **`node_modules`/Playwright são só para desenvolvimento** — usar o app não requer Node/npm em nenhum momento.

@@ -74,12 +74,7 @@
             this.brushPreview = document.getElementById('brushPreview');
             this.eraserPreview = document.getElementById('eraserPreview');
             
-            // Região de crop para exportação de vídeo
-            this.cropRegion = null;        // { x, y, w, h } em coordenadas do canvas
-            this._cropDragging = false;
-            this._cropStart = null;
-
-            // Região de crop para exportação
+            // Região de crop para exportação de vídeo ({ x, y, w, h } em coordenadas do canvas)
             this.cropRegion    = null;
             this._cropDragging = false;
             this._cropStart    = null;
@@ -242,7 +237,11 @@
             // Canvas events
             this.canvas.addEventListener('mousedown', (e) => self.handleMouseDown(e));
             this.canvas.addEventListener('mousemove', (e) => self.handleMouseMove(e));
-            this.canvas.addEventListener('mouseup', () => self.handleMouseUp());
+            // mouseup no document (não só no canvas): soltar o botão FORA do canvas deixava o
+            // traço "preso" em isDrawing=true e ele continuava desenhando ao voltar sem botão.
+            document.addEventListener('mouseup', () => {
+                if (self.isDrawing || self.isDraggingComment) self.handleMouseUp();
+            });
             this.canvas.addEventListener('click', (e) => self.handleClick(e));
             
             // Preview do cursor
@@ -475,6 +474,8 @@
                 self.isAltPressed   = false;
                 self.isShiftPressed = false;
                 self.updateStraightLineIndicator();
+                // Trocar de janela no meio do traço não dispara mouseup — finaliza aqui
+                if (self.isDrawing || self.isDraggingComment) self.handleMouseUp();
             });
         };
 
@@ -509,10 +510,20 @@
         };
 
         // NOVA FUNÇÃO: Atualizar preview do cursor
+        // Fator tela/canvas: lineWidth/eraseSize estão em pixels do CANVAS; na tela o traço
+        // aparece multiplicado pelo zoom de exibição (ex.: 20px viram 9,4px em 47%).
+        FlowAnimator.prototype._screenScale = function() {
+            const rect = this.canvas.getBoundingClientRect();
+            return rect.width > 0 ? rect.width / this.canvas.width : 1;
+        };
+
         FlowAnimator.prototype.updateCursorPreview = function(e) {
+            const k = this._screenScale();
+            const brushSize = Math.max(4, this.lineWidth * k);
+            const eraserSize = Math.max(4, this.eraseSize * k);
             if (e) {
                 const preview = this.mode === 'draw' ? this.brushPreview : this.eraserPreview;
-                const size = this.mode === 'draw' ? this.lineWidth : this.eraseSize;
+                const size = this.mode === 'draw' ? brushSize : eraserSize;
                 
                 if (preview.style.display === 'block') {
                     preview.style.left = (e.clientX - size / 2) + 'px';
@@ -522,9 +533,6 @@
                 }
             } else {
                 // Apenas atualizar tamanho
-                const brushSize = this.lineWidth;
-                const eraserSize = this.eraseSize;
-                
                 this.brushPreview.style.width = brushSize + 'px';
                 this.brushPreview.style.height = brushSize + 'px';
                 this.eraserPreview.style.width = eraserSize + 'px';
@@ -766,33 +774,61 @@
             }
         };
 
-        // Retorna o comentário sob o ponto (x,y) usando bounding box real do texto
-        // Largura do texto do comentário, cacheada por (texto, fonte, tamanho) —
-        // getCommentAt roda a cada mousemove e measureText por comentário é caro.
-        FlowAnimator.prototype._getCommentTextWidth = function(comment) {
+        // Layout do texto do comentário: respeita quebras de linha (Enter no campo) e quebra
+        // automaticamente linhas mais largas que COMMENT_MAX_WIDTH. Cacheado por (texto, fonte,
+        // tamanho) — getCommentAt roda a cada mousemove e measureText por comentário é caro.
+        FlowAnimator.COMMENT_MAX_WIDTH = 480;
+        FlowAnimator.COMMENT_PADDING = 10;
+
+        FlowAnimator.prototype._getCommentLayout = function(comment) {
             const fontFamily = comment.fontFamily || this.commentFontFamily;
             const fontSize   = comment.fontSize   || this.commentFontSize;
-            const key = `${comment.text}|${fontFamily}|${fontSize}`;
-            if (comment._textWidthKey !== key) {
+            const text = String(comment.text == null ? '' : comment.text);
+            const key = `${text}|${fontFamily}|${fontSize}`;
+            if (comment._layoutKey !== key) {
                 const ctx = this.ctx;
                 ctx.save();
                 ctx.font = `${fontSize}px ${fontFamily}`;
-                comment._textWidth = ctx.measureText(comment.text).width;
-                comment._textWidthKey = key;
+                const maxW = FlowAnimator.COMMENT_MAX_WIDTH;
+                const lines = [];
+                for (const para of text.split(/\r?\n/)) {
+                    const words = para.split(' ');
+                    let line = '';
+                    for (const word of words) {
+                        const candidate = line ? line + ' ' + word : word;
+                        if (line && ctx.measureText(candidate).width > maxW) {
+                            lines.push(line);
+                            line = word;
+                        } else {
+                            line = candidate;
+                        }
+                    }
+                    lines.push(line);
+                }
+                let width = 0;
+                for (const l of lines) width = Math.max(width, ctx.measureText(l).width);
                 ctx.restore();
+                comment._layout = { lines, width, lineHeight: Math.round(fontSize * 1.3) };
+                comment._layoutKey = key;
             }
-            return comment._textWidth;
+            return comment._layout;
         };
 
+        // Caixa (centrada em x,y) ocupada pelo comentário no canvas
+        FlowAnimator.prototype._getCommentBox = function(comment) {
+            const layout = this._getCommentLayout(comment);
+            const pad = FlowAnimator.COMMENT_PADDING;
+            const w = layout.width + pad * 2;
+            const h = layout.lines.length * layout.lineHeight + pad * 2;
+            return { x: comment.x - w / 2, y: comment.y - h / 2, w, h, layout };
+        };
+
+        // Retorna o comentário sob o ponto (x,y) usando a caixa real do texto
         FlowAnimator.prototype.getCommentAt = function(x, y) {
             for (let i = this.comments.length - 1; i >= 0; i--) {
                 const comment = this.comments[i];
-                const fontSize = comment.fontSize || this.commentFontSize;
-                const padding = 10;
-                const boxW = this._getCommentTextWidth(comment) + padding * 2;
-                const boxH = fontSize + padding * 2;
-                if (x >= comment.x - boxW / 2 && x <= comment.x + boxW / 2 &&
-                    y >= comment.y - boxH / 2 && y <= comment.y + boxH / 2) {
+                const b = this._getCommentBox(comment);
+                if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
                     return comment;
                 }
             }
@@ -1015,28 +1051,25 @@
             const borderColor = comment.borderColor || comment.color || this.commentBorderColor;
             const opacity = comment.opacity !== undefined ? comment.opacity : this.commentOpacity;
             
+            const box = this._getCommentBox(comment);
             ctx.font = `${fontSize}px ${fontFamily}`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             
-            const padding = 10;
-            const metrics = ctx.measureText(comment.text);
-            const width = metrics.width + padding * 2;
-            const height = fontSize + padding * 2;
-            
             // Background com opacidade
-            const bgColorWithOpacity = this.hexToRgba(bgColor, opacity);
-            ctx.fillStyle = bgColorWithOpacity;
-            ctx.fillRect(comment.x - width/2, comment.y - height/2, width, height);
+            ctx.fillStyle = this.hexToRgba(bgColor, opacity);
+            ctx.fillRect(box.x, box.y, box.w, box.h);
             
             // Border
             ctx.strokeStyle = borderColor;
             ctx.lineWidth = 2;
-            ctx.strokeRect(comment.x - width/2, comment.y - height/2, width, height);
+            ctx.strokeRect(box.x, box.y, box.w, box.h);
             
-            // Text
+            // Texto, linha a linha (fillText ignora "\n")
             ctx.fillStyle = textColor;
-            ctx.fillText(comment.text, comment.x, comment.y);
+            const { lines, lineHeight } = box.layout;
+            const firstY = comment.y - ((lines.length - 1) * lineHeight) / 2;
+            lines.forEach((line, i) => ctx.fillText(line, comment.x, firstY + i * lineHeight));
             
             ctx.restore();
         };
@@ -1085,65 +1118,56 @@
             const drawCtx = this._offscreenCtx;
             drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
 
-            const drawsVisible = this._isTypeVisible('draw');
-            const erasesVisible = this._isTypeVisible('erase');
+            // Desenhos e apagamentos são aplicados INTERCALADOS em ordem cronológica de início —
+            // a mesma ordem de rebuildDrawingCanvas(). Antes os apagamentos rodavam depois de
+            // todos os desenhos, então um "apagar" em t=2s apagava também um traço feito em t=5s
+            // no mesmo lugar: o vídeo mostrava algo diferente da edição.
+            const actions = this.actions;
+            const order = actions.map((_, i) => i).sort((a, b) =>
+                ((actions[a].startTime || 0) - (actions[b].startTime || 0)) || (a - b));
+            const visible = (a) => (a.type === 'draw' || a.type === 'erase') && this._isTypeVisible(a.type);
+            const endOf = (a) => (a.startTime || 0) + (a.duration || 2);
 
-            if (drawsVisible) {
-                // PASSO 1a: separar desenhos concluídos (cacheáveis) dos ativos
-                const persistedIndices = [];
-                const activeDraws = [];
-                for (let i = 0; i < this.actions.length; i++) {
-                    const action = this.actions[i];
-                    if (action.type !== 'draw') continue;
-                    const actionStartTime = action.startTime || 0;
-                    const actionEndTime = actionStartTime + (action.duration || 2);
-                    if (currentTime >= actionStartTime && currentTime <= actionEndTime) {
-                        activeDraws.push(action);
-                    } else if (currentTime > actionEndTime && this.persistPaths) {
-                        persistedIndices.push(i);
-                    }
-                }
-
-                // PASSO 1b: recompor (ou reaproveitar) a camada de desenhos concluídos
-                const cacheKey = persistedIndices.join(',');
-                if (cacheKey !== this._persistedDrawsKey) {
-                    const pCtx = this._persistedDrawsCtx;
-                    pCtx.clearRect(0, 0, this._persistedDrawsCanvas.width, this._persistedDrawsCanvas.height);
-                    for (const i of persistedIndices) {
-                        const action = this.actions[i];
-                        this.drawAnimatedPath(pCtx, action.points, action.color, action.width, 1);
-                    }
-                    this._persistedDrawsKey = cacheKey;
-                }
-                if (this._persistedDrawsKey !== '') {
-                    drawCtx.drawImage(this._persistedDrawsCanvas, 0, 0);
-                }
-
-                // PASSO 1c: desenhos ativos (progresso parcial, redesenhados a cada frame)
-                for (const action of activeDraws) {
-                    const actionStartTime = action.startTime || 0;
-                    const actionDuration = action.duration || 2;
-                    const progress = (currentTime - actionStartTime) / actionDuration;
-                    this.drawAnimatedPath(drawCtx, action.points, action.color, action.width, progress);
+            // PASSO 1: prefixo cronológico de ações já concluídas — composto uma vez em
+            // _persistedDrawsCanvas e reaproveitado via drawImage enquanto o prefixo não mudar.
+            let prefixLen = 0;
+            if (this.persistPaths) {
+                while (prefixLen < order.length) {
+                    const a = actions[order[prefixLen]];
+                    if (visible(a) && endOf(a) >= currentTime) break;
+                    prefixLen++;
                 }
             }
-
-            // PASSO 2: Aplicar apagamentos DIRETAMENTE no canvas de desenhos (não no principal)
-            if (erasesVisible) {
-                for (let action of this.actions) {
-                    if (action.type === 'erase') {
-                        const actionStartTime = action.startTime || 0;
-                        const actionDuration = action.duration || 2;
-                        const actionEndTime = actionStartTime + actionDuration;
-
-                        if (currentTime >= actionStartTime && currentTime <= actionEndTime) {
-                            const progress = (currentTime - actionStartTime) / actionDuration;
-                            this.eraseAnimatedPathOnCanvas(drawCtx, action.points, action.size, progress);
-                        } else if (currentTime > actionEndTime && this.persistPaths) {
-                            this.eraseAnimatedPathOnCanvas(drawCtx, action.points, action.size, 1);
-                        }
-                    }
+            const cacheKey = order.slice(0, prefixLen).join(',');
+            if (cacheKey !== this._persistedDrawsKey) {
+                const pCtx = this._persistedDrawsCtx;
+                pCtx.clearRect(0, 0, this._persistedDrawsCanvas.width, this._persistedDrawsCanvas.height);
+                for (let k = 0; k < prefixLen; k++) {
+                    const a = actions[order[k]];
+                    if (!visible(a)) continue;
+                    if (a.type === 'draw') this.drawAnimatedPath(pCtx, a.points, a.color, a.width, 1);
+                    else this.eraseAnimatedPathOnCanvas(pCtx, a.points, a.size, 1);
                 }
+                this._persistedDrawsKey = cacheKey;
+            }
+            if (prefixLen > 0) {
+                drawCtx.drawImage(this._persistedDrawsCanvas, 0, 0);
+            }
+
+            // PASSO 2: o restante, na mesma ordem — ativos com progresso parcial e (com
+            // persistPaths) os concluídos que vêm depois de algum ativo na cronologia.
+            for (let k = prefixLen; k < order.length; k++) {
+                const a = actions[order[k]];
+                if (!visible(a)) continue;
+                const start = a.startTime || 0;
+                const duration = a.duration || 2;
+                let progress;
+                if (currentTime < start) continue;
+                if (currentTime <= start + duration) progress = (currentTime - start) / duration;
+                else if (this.persistPaths) progress = 1;
+                else continue;
+                if (a.type === 'draw') this.drawAnimatedPath(drawCtx, a.points, a.color, a.width, progress);
+                else this.eraseAnimatedPathOnCanvas(drawCtx, a.points, a.size, progress);
             }
 
             // PASSO 3: Aplicar resultado final no canvas principal (fundo fica intacto)
@@ -1186,22 +1210,44 @@
                 if (!isErase) ctx.fillStyle = options.color;
                 ctx.fill();
             } else {
-                const drawPoints = Math.max(1, Math.floor(points.length * progress));
+                // Progresso por COMPRIMENTO DE ARCO, não por quantidade de pontos: antes um
+                // segmento longo com poucos pontos (ex.: linha reta Alt/Shift = 2 pontos) ficava
+                // completo na metade da duração, e a velocidade variava com a do mouse.
+                const cum = this._cumulativeLengths(points);
+                const total = cum[cum.length - 1];
+                const target = total * Math.max(0, Math.min(1, progress));
                 ctx.beginPath();
                 ctx.moveTo(points[0].x, points[0].y);
-                for (let i = 1; i < drawPoints; i++) {
+                let i = 1;
+                while (i < points.length && cum[i] <= target) {
                     ctx.lineTo(points[i].x, points[i].y);
+                    i++;
                 }
-                if (drawPoints < points.length && progress < 1) {
-                    const lastIndex = drawPoints - 1;
-                    const segmentProgress = (points.length * progress) - lastIndex;
-                    const lp = points[lastIndex];
-                    const np = points[drawPoints];
-                    ctx.lineTo(lp.x + (np.x - lp.x) * segmentProgress, lp.y + (np.y - lp.y) * segmentProgress);
+                if (i < points.length && target > cum[i - 1]) {
+                    const segLen = cum[i] - cum[i - 1];
+                    const f = segLen > 0 ? (target - cum[i - 1]) / segLen : 0;
+                    const lp = points[i - 1];
+                    const np = points[i];
+                    ctx.lineTo(lp.x + (np.x - lp.x) * f, lp.y + (np.y - lp.y) * f);
                 }
                 ctx.stroke();
             }
             ctx.restore();
+        };
+
+        // Comprimentos acumulados de uma polilinha (cum[0] = 0), cacheados por array de pontos.
+        // Seguro porque `points` nunca é mutado in-place (só reatribuído) — ver saveUndoState.
+        FlowAnimator.prototype._cumulativeLengths = function(points) {
+            if (!this._cumLenCache) this._cumLenCache = new WeakMap();
+            let cum = this._cumLenCache.get(points);
+            if (!cum || cum.length !== points.length) {
+                cum = new Float64Array(points.length);
+                for (let i = 1; i < points.length; i++) {
+                    cum[i] = cum[i - 1] + Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+                }
+                this._cumLenCache.set(points, cum);
+            }
+            return cum;
         };
 
         // Mantidos como wrappers para compatibilidade com código existente
@@ -1311,7 +1357,7 @@
             this._cropCanvas.style.pointerEvents = 'auto';
             this._cropCanvas.style.cursor = 'crosshair';
             document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-            this.hideCursorPreviews();
+            this.hideCursorPreview();
             this.showTooltip('✂️ Arraste para selecionar a região de gravação | ESC cancela');
         };
 
@@ -1496,36 +1542,19 @@
         };
 
         FlowAnimator.prototype.updateInfo = function() {
-            let drawCount = 0, eraseCount = 0, totalDuration = 0, maxTime = 0;
+            let drawCount = 0, eraseCount = 0;
 
             for (let action of this.actions) {
                 if (action.type === 'draw') drawCount++;
                 else if (action.type === 'erase') eraseCount++;
-                const actionEndTime = (action.startTime || 0) + (action.duration || 2);
-                maxTime = Math.max(maxTime, actionEndTime);
-                totalDuration += action.duration || 2;
-            }
-
-            // Sweep-line O(n log n) para contar ações paralelas
-            let parallelActions = 0;
-            if (this.actions.length > 1) {
-                const evts = [];
-                for (const a of this.actions) {
-                    evts.push({ t: a.startTime || 0, d: 1 });
-                    evts.push({ t: (a.startTime || 0) + (a.duration || 2), d: -1 });
-                }
-                evts.sort((a, b) => a.t - b.t || a.d - b.d);
-                let cur = 0;
-                for (const ev of evts) {
-                    cur += ev.d;
-                    if (cur > 1) { parallelActions++; break; }
-                }
             }
 
             document.getElementById('drawCount').textContent = drawCount;
             document.getElementById('eraseCount').textContent = eraseCount;
             document.getElementById('commentCount').textContent = this.comments.length;
-            document.getElementById('realDuration').textContent = totalDuration.toFixed(1) + 's';
+            // "Fim do conteúdo": quando a última ação/comentário termina (antes somava as
+            // durações, o que não corresponde a nada visível quando há ações paralelas)
+            document.getElementById('realDuration').textContent = this._lastContentEnd().toFixed(1) + 's';
         };
 
         // NOVA FUNÇÃO: Reconstruir canvas de desenho - CORRIGIDO
@@ -1684,10 +1713,14 @@
 
         // Clear - CORRIGIDO
         FlowAnimator.prototype.clear = async function() {
-            if (this.actions.length > 0 || this.comments.length > 0) {
+            const hadContent = this.actions.length > 0 || this.comments.length > 0;
+            if (hadContent) {
                 if (!(await showConfirm('Limpar todas as ações e comentários?'))) return;
+                // Snapshot ANTES de limpar: "Limpar Tudo" (e a troca de página, que o reutiliza)
+                // passa a ser desfazível com Ctrl+Z em vez de perder o trabalho de vez.
+                this.saveUndoState();
             }
-            
+
             this.actions = [];
             this.comments = [];
             this.currentPath = [];
@@ -1699,44 +1732,7 @@
             this.timeline.refresh();
             this.updateInfo();
             this.updateTimeDisplay();
-        };
-
-        // Comments - ATUALIZADA para usar novo sistema
-        FlowAnimator.prototype.addComment = function() {
-            const text = document.getElementById('commentText').value.trim();
-            if (!text) {
-                this.showTooltip('Digite um texto para o comentário!');
-                return;
-            }
-            
-            // NOVO: Usar tempo atual da timeline como padrão
-            const defaultTime = this.animationProgress * this.totalAnimationTime;
-            const time = parseFloat(document.getElementById('commentTime').value) || defaultTime;
-            const duration = parseFloat(document.getElementById('commentDuration').value) || 3;
-            
-            this.comments.push({
-                x: this.canvas.width / 2,
-                y: this.canvas.height / 2,
-                text: text,
-                time: time,
-                duration: duration,
-                textColor: this.commentTextColor,
-                bgColor: this.commentBgColor,
-                borderColor: this.commentBorderColor,
-                fontFamily: this.commentFontFamily,
-                fontSize: this.commentFontSize,
-                opacity: this.commentOpacity
-            });
-            
-            // Atualizar campo de tempo para próximo comentário
-            document.getElementById('commentTime').value = (time + duration).toFixed(1);
-            document.getElementById('commentText').value = '';
-            
-            this.rebuildDrawingCanvas();
-            this.redrawMainCanvas();
-            this.timeline.refresh();
-            this.updateInfo();
-            this.showTooltip(`💬 Comentário adicionado em ${time.toFixed(1)}s!`);
+            if (hadContent) this.showTooltip('🗑️ Tudo limpo — Ctrl+Z desfaz');
         };
 
         // NOVA FUNÇÃO: Adicionar controles de tempo na interface
@@ -1935,12 +1931,15 @@
         };
 
         FlowAnimator.prototype.fitToScreen = function() {
-            const wrapper = document.getElementById('canvasWrapper');
-            const wrapperWidth = wrapper.clientWidth - 40;
-            const wrapperHeight = wrapper.clientHeight - 40;
+            // Mede a área visível (viewport), não o wrapper — o wrapper encolhe/estica com o
+            // próprio canvas e dava uma escala errada antes do primeiro ajuste.
+            const viewport = document.querySelector('.canvas-viewport');
+            const availW = viewport.clientWidth - 40;
+            const availH = viewport.clientHeight - 40;
+            if (availW <= 0 || availH <= 0) return;
             
-            const scaleX = wrapperWidth / this.canvas.width;
-            const scaleY = wrapperHeight / this.canvas.height;
+            const scaleX = availW / this.canvas.width;
+            const scaleY = availH / this.canvas.height;
             
             this.displayScale = Math.min(scaleX, scaleY);
             this.updateCanvasDisplay();
@@ -1976,7 +1975,15 @@
             file.arrayBuffer().then(arrayBuffer => {
                 return pdfjsLib.getDocument({
                     data: arrayBuffer,
-                    cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
+                    // CVE-2024-4367: no PDF.js < 4.2.67, com isEvalSupported=true (padrão) um PDF
+                    // malicioso consegue executar JavaScript na origem do app. Desligar o eval
+                    // fecha o vetor sem precisar migrar para o PDF.js 4+ (que é só ES module).
+                    isEvalSupported: false,
+                    // cMaps (fontes CJK) são buscados via fetch, que o Chrome bloqueia em file:// —
+                    // nesse caso usa a CDN; servido por HTTP(S) usa a cópia vendorizada.
+                    cMapUrl: location.protocol === 'file:'
+                        ? 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/'
+                        : 'vendor/pdfjs/cmaps/',
                     cMapPacked: true
                 }).promise;
             }).then(pdf => {
@@ -2399,11 +2406,11 @@
         FlowAnimator.prototype._buildProjectData = function(includeBackground) {
             const data = {
                 actions: this.actions,
-                // Remove campos de cache internos (_textWidth*) antes de serializar
+                // Remove campos de cache internos (_layout*) antes de serializar
                 comments: this.comments.map(c => {
                     const clean = Object.assign({}, c);
-                    delete clean._textWidth;
-                    delete clean._textWidthKey;
+                    delete clean._layout;
+                    delete clean._layoutKey;
                     return clean;
                 }),
                 settings: {
@@ -2614,17 +2621,23 @@
         // Tooltip Function
         FlowAnimator.prototype.showTooltip = function(message) {
             const tooltip = document.getElementById('tooltip');
-            if (tooltip) {
-                tooltip.textContent = message;
-                tooltip.style.display = 'block';
-                tooltip.style.left = '50%';
-                tooltip.style.top = '50%';
-                tooltip.style.transform = 'translate(-50%, -50%)';
-                
-                setTimeout(function() {
-                    tooltip.style.display = 'none';
-                }, 3000);
+            if (!tooltip) return;
+            tooltip.textContent = message;
+            tooltip.style.display = 'block';
+
+            // Rodapé centralizado da área do canvas (antes ficava no centro, cobrindo o desenho)
+            const vp = document.querySelector('.canvas-viewport');
+            if (vp) {
+                const r = vp.getBoundingClientRect();
+                tooltip.style.left = (r.left + r.width / 2) + 'px';
+                tooltip.style.top = Math.max(r.top + 8, r.bottom - tooltip.offsetHeight - 16) + 'px';
             }
+
+            // Um timer por vez: antes o timer de um aviso anterior escondia o novo antes da hora
+            clearTimeout(this._tooltipTimer);
+            this._tooltipTimer = setTimeout(() => {
+                tooltip.style.display = 'none';
+            }, 3000);
         };
 
         FlowAnimator.prototype.optimizePerformance = function() {

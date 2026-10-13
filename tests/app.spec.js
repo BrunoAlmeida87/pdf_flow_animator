@@ -6,22 +6,10 @@ const os = require('os');
 
 const MAIN_HTML_URL = 'file://' + path.resolve(__dirname, '..', 'main.html');
 
-// PDF.js é carregado via CDN (cdnjs.cloudflare.com). Alguns ambientes de CI/sandbox bloqueiam
-// esse domínio; nenhum teste aqui exercita carregamento real de PDF, então interceptamos as
-// duas URLs com um stub mínimo para manter os testes determinísticos em qualquer ambiente.
-async function stubPdfJs(page) {
-    await page.route('**cdnjs.cloudflare.com/**pdf.min.js', (route) => route.fulfill({
-        contentType: 'application/javascript',
-        body: 'window.pdfjsLib = { GlobalWorkerOptions: {}, getDocument: () => ({ promise: Promise.reject(new Error("stub: sem PDF.js real nos testes")) }) };'
-    }));
-    await page.route('**cdnjs.cloudflare.com/**pdf.worker.min.js', (route) => route.fulfill({
-        contentType: 'application/javascript',
-        body: '// stub worker'
-    }));
-}
+// PDF.js é vendorizado em vendor/pdfjs/ (carregado localmente, sem CDN), então os testes
+// rodam offline/determinísticos e podem até importar um PDF real (tests/fixtures/sample.pdf).
 
 async function gotoApp(page) {
-    await stubPdfJs(page);
     await page.goto(MAIN_HTML_URL);
     await page.waitForTimeout(300);
 }
@@ -701,4 +689,217 @@ test('reimportar projeto com mesma assinatura de timeline atualiza DOM e delete 
     await expect(page.locator('#commentCount')).toHaveText('0');
     const commentsLeft = await page.evaluate(() => window.flowAnimator.comments.length);
     expect(commentsLeft).toBe(0);
+});
+
+// ─── Etapa 1: regressões dos bugs confirmados na auditoria ─────────────────
+
+const FIXTURE_PDF = path.resolve(__dirname, 'fixtures', 'sample.pdf');
+
+async function drawStroke(page, from, to, steps = 6) {
+    const box = await page.locator('#canvas').boundingBox();
+    await page.mouse.move(box.x + from[0], box.y + from[1]);
+    await page.mouse.down();
+    await page.mouse.move(box.x + to[0], box.y + to[1], { steps });
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+}
+
+test('layout inicial: sidebar e botões de zoom cabem na tela em 1366×768 (regressão)', async ({ page }) => {
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await gotoApp(page);
+    const m = await page.evaluate(() => {
+        const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+        return { sidebarRight: r('.sidebar').right, sidebarLeft: r('.sidebar').left, fitRight: r('#fitBtn').right, vw: innerWidth };
+    });
+    // Antes: o canvas de 1920px empurrava a sidebar para x=1920 (fora da tela)
+    expect(m.sidebarLeft).toBeLessThan(m.vw);
+    expect(m.sidebarRight).toBeLessThanOrEqual(m.vw + 1);
+    expect(m.fitRight).toBeLessThanOrEqual(m.vw);
+});
+
+test('barra de status não cobre a timeline (regressão)', async ({ page }) => {
+    await gotoApp(page);
+    const m = await page.evaluate(() => ({
+        timelineBottom: document.querySelector('.timeline-area').getBoundingClientRect().bottom,
+        statusTop: document.querySelector('.status-bar').getBoundingClientRect().top
+    }));
+    expect(m.timelineBottom).toBeLessThanOrEqual(m.statusTop + 0.5);
+});
+
+test('importar PDF real usa isEvalSupported:false (CVE-2024-4367) e renderiza a página', async ({ page }) => {
+    await gotoApp(page);
+    await page.evaluate(() => {
+        // As propriedades do namespace UMD do PDF.js são somente-leitura — espiona via Proxy
+        const lib = window.pdfjsLib;
+        window.__pdfParams = null;
+        window.pdfjsLib = new Proxy(lib, {
+            get(target, key) {
+                if (key === 'getDocument') return (params) => { window.__pdfParams = params; return target.getDocument(params); };
+                return target[key];
+            }
+        });
+    });
+    await page.setInputFiles('#pdfInput', FIXTURE_PDF);
+    await expect(page.locator('#fileName')).toContainText('Página 1/2', { timeout: 10000 });
+    const info = await page.evaluate(() => {
+        const fa = window.flowAnimator;
+        // O retângulo azul da página 1 ocupa a região (40..240, 40..160) em pontos PDF (y invertido)
+        const scale = fa.canvas.width / 420;
+        const d = fa.ctx.getImageData(Math.round(100 * scale), Math.round((298 - 100) * scale), 1, 1).data;
+        return { isEvalSupported: window.__pdfParams && window.__pdfParams.isEvalSupported, blue: d[2] > 200 && d[0] < 60 };
+    });
+    expect(info.isEvalSupported).toBe(false);
+    expect(info.blue).toBe(true);
+});
+
+test('botão ✂️ Região entra no modo crop sem erro de página (regressão)', async ({ page }) => {
+    const errors = [];
+    page.on('pageerror', (err) => errors.push(err.message));
+    await gotoApp(page);
+    await page.click('#cropRegionBtn');
+    await page.waitForTimeout(150);
+    expect(errors).toEqual([]);
+    expect(await page.evaluate(() => window.flowAnimator.mode)).toBe('crop');
+    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => window.flowAnimator.mode)).toBe('draw');
+});
+
+test('soltar o mouse fora do canvas finaliza o traço (regressão)', async ({ page }) => {
+    await gotoApp(page);
+    const box = await page.locator('#canvas').boundingBox();
+    await page.mouse.move(box.x + 50, box.y + 50);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 100, box.y + 80, { steps: 4 });
+    await page.mouse.move(box.x + 100, box.y + box.height + 40, { steps: 4 }); // sai do canvas
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+    const s1 = await page.evaluate(() => ({ drawing: window.flowAnimator.isDrawing, n: window.flowAnimator.actions.length }));
+    expect(s1).toEqual({ drawing: false, n: 1 });
+    // Voltar ao canvas sem botão pressionado não pode continuar desenhando
+    await page.mouse.move(box.x + 300, box.y + 150, { steps: 4 });
+    expect(await page.evaluate(() => window.flowAnimator.isDrawing)).toBe(false);
+});
+
+test('reprodução respeita a ordem cronológica: apagar antigo não apaga traço posterior (regressão)', async ({ page }) => {
+    await gotoApp(page);
+    const px = await page.evaluate(() => {
+        const fa = window.flowAnimator;
+        fa.actions = [
+            { type: 'erase', points: [{ x: 300, y: 600 }, { x: 700, y: 600 }], size: 60, startTime: 2, duration: 1 },
+            { type: 'draw', points: [{ x: 500, y: 450 }, { x: 500, y: 750 }], color: '#ff0000', width: 10, startTime: 5, duration: 1 }
+        ];
+        fa.totalAnimationTime = 10;
+        fa.rebuildDrawingCanvas();
+        fa.redrawMainCanvas();
+        const read = () => Array.from(fa.ctx.getImageData(500, 600, 1, 1).data.slice(0, 3));
+        const edit = read();
+        fa.animationProgress = 1;
+        fa.renderAnimationFrame();
+        return { edit, playback: read() };
+    });
+    expect(px.edit).toEqual([255, 0, 0]);
+    expect(px.playback).toEqual(px.edit); // antes: o fundo branco (o apagar de t=2s "apagava o futuro")
+});
+
+test('linha reta de 2 pontos anima proporcionalmente à duração (regressão)', async ({ page }) => {
+    await gotoApp(page);
+    const reach = await page.evaluate(() => {
+        const fa = window.flowAnimator;
+        const c = document.createElement('canvas'); c.width = 200; c.height = 20;
+        const ctx = c.getContext('2d');
+        const at = (p) => {
+            ctx.clearRect(0, 0, 200, 20);
+            fa.drawAnimatedPath(ctx, [{ x: 0, y: 10 }, { x: 200, y: 10 }], '#000', 2, p);
+            const d = ctx.getImageData(0, 10, 200, 1).data;
+            let max = 0;
+            for (let x = 0; x < 200; x++) if (d[x * 4 + 3] > 0) max = x;
+            return max;
+        };
+        return [at(0.25), at(0.5), at(0.75)];
+    });
+    // Antes: [102, 199, 199] — completa na metade da duração e para
+    expect(reach[0]).toBeGreaterThan(40); expect(reach[0]).toBeLessThan(60);
+    expect(reach[1]).toBeGreaterThan(90); expect(reach[1]).toBeLessThan(110);
+    expect(reach[2]).toBeGreaterThan(140); expect(reach[2]).toBeLessThan(160);
+});
+
+test('"Limpar Tudo" é desfazível com Ctrl+Z (regressão)', async ({ page }) => {
+    await gotoApp(page);
+    await drawStroke(page, [40, 40], [140, 90]);
+    await drawStroke(page, [60, 140], [200, 160]);
+    await drawStroke(page, [220, 40], [300, 120]);
+    await expect(page.locator('#drawCount')).toHaveText('3');
+    await page.click('#clearBtn');
+    await page.click('.app-modal-overlay [data-action="ok"]');
+    await expect(page.locator('#drawCount')).toHaveText('0');
+    await page.keyboard.press('Control+z');
+    await expect(page.locator('#drawCount')).toHaveText('3'); // antes: voltava só 2
+});
+
+test('itens paralelos ficam em lanes próprias, sem cobrir uns aos outros (regressão)', async ({ page }) => {
+    await gotoApp(page);
+    await page.evaluate(() => {
+        const fa = window.flowAnimator;
+        for (let i = 0; i < 3; i++) {
+            fa.actions.push({ type: 'draw', points: [{ x: 10, y: 10 }, { x: 90, y: 90 }], color: '#000', width: 3, startTime: 1, duration: 3 });
+        }
+        fa.timeline.refresh();
+    });
+    const rects = await page.$$eval('.timeline-item.draw', els => els.map(e => {
+        const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom };
+    }));
+    expect(rects).toHaveLength(3);
+    rects.sort((a, b) => a.top - b.top);
+    for (let i = 1; i < rects.length; i++) {
+        expect(rects[i].top).toBeGreaterThanOrEqual(rects[i - 1].bottom); // sem sobreposição vertical
+    }
+    // Header da track alinhado e com a mesma altura da track (antes: 40px desalinhado)
+    const align = await page.evaluate(() => {
+        const header = document.querySelectorAll('#trackHeaders .track-header')[0].getBoundingClientRect();
+        const track = document.querySelector('.timeline-track[data-track-id="draw"]').getBoundingClientRect();
+        return { dTop: Math.abs(header.top - track.top), dH: Math.abs(header.height - track.height) };
+    });
+    expect(align.dTop).toBeLessThan(1.5);
+    expect(align.dH).toBeLessThan(1.5);
+});
+
+test('um aviso novo não é escondido pelo timer do anterior (regressão)', async ({ page }) => {
+    await gotoApp(page);
+    const shown = await page.evaluate(async () => {
+        const fa = window.flowAnimator;
+        fa.showTooltip('primeiro');
+        await new Promise(r => setTimeout(r, 2500));
+        fa.showTooltip('segundo');
+        await new Promise(r => setTimeout(r, 900));
+        const el = document.getElementById('tooltip');
+        return getComputedStyle(el).display !== 'none' && el.textContent === 'segundo';
+    });
+    expect(shown).toBe(true);
+});
+
+test('preview do apagador acompanha o zoom de exibição (regressão)', async ({ page }) => {
+    await gotoApp(page);
+    await page.click('[data-mode="erase"]');
+    const box = await page.locator('#canvas').boundingBox();
+    await page.mouse.move(box.x + 200, box.y + 200);
+    await page.mouse.move(box.x + 210, box.y + 205);
+    const m = await page.evaluate(() => {
+        const fa = window.flowAnimator;
+        const k = fa.canvas.getBoundingClientRect().width / fa.canvas.width;
+        return { previewW: parseFloat(document.getElementById('eraserPreview').style.width), expected: fa.eraseSize * k };
+    });
+    expect(Math.abs(m.previewW - Math.max(4, m.expected))).toBeLessThan(0.6);
+});
+
+test('comentário com Enter é desenhado em várias linhas (regressão)', async ({ page }) => {
+    await gotoApp(page);
+    const box = await page.evaluate(() => {
+        const fa = window.flowAnimator;
+        const c = { x: 400, y: 300, text: 'Linha 1\nLinha 2\nLinha 3', time: 0, duration: 3, fontSize: 20 };
+        fa.comments.push(c);
+        const b = fa._getCommentBox(c);
+        return { lines: b.layout.lines.length, h: b.h };
+    });
+    expect(box.lines).toBe(3);
+    expect(box.h).toBeGreaterThan(3 * 20);
 });
