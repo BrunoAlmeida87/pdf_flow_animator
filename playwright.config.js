@@ -20,6 +20,8 @@ module.exports = defineConfig({
     use: {
         ...devices['Desktop Chrome'],
         viewport: { width: 1600, height: 1000 },
+        // O app detecta o idioma do navegador; os testes verificam textos em pt-BR
+        locale: 'pt-BR',
         launchOptions
     }
 });

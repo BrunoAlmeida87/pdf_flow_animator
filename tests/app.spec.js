@@ -12,6 +12,20 @@ const MAIN_HTML_URL = 'file://' + path.resolve(__dirname, '..', 'main.html');
 async function gotoApp(page) {
     await page.goto(MAIN_HTML_URL);
     await page.waitForTimeout(300);
+    // Fecha o cartão de boas-vindas (estado vazio) para os cliques chegarem ao canvas
+    const blank = page.locator('#emptyStartBlank');
+    if (await blank.isVisible()) await blank.click();
+}
+
+// Clica num item de menu da topbar (Arquivo / Editar / Exportar)
+async function clickMenuItem(page, menuId, itemId) {
+    await page.click(`#${menuId} > button`);
+    await page.click(`#${itemId}`);
+}
+
+// Seleciona a ferramenta de comentário (o painel do comentário só aparece com ela ativa)
+async function useCommentTool(page) {
+    await page.click('[data-mode="comment"]');
 }
 
 test('carrega sem erros de console ou de página', async ({ page }) => {
@@ -63,6 +77,7 @@ test('adicionar comentário via UI atualiza contador e dados internos', async ({
     const canvas = page.locator('#canvas');
     const box = await canvas.boundingBox();
 
+    await useCommentTool(page);
     await page.fill('#commentText', 'Comentário de teste');
     await page.click('#addCommentBtn');
     await page.waitForTimeout(200);
@@ -81,6 +96,7 @@ test('undo/redo restauram o estado de comentários corretamente', async ({ page 
     const canvas = page.locator('#canvas');
     const box = await canvas.boundingBox();
 
+    await useCommentTool(page);
     await page.fill('#commentText', 'Comentário de teste');
     await page.click('#addCommentBtn');
     await page.waitForTimeout(200);
@@ -88,6 +104,7 @@ test('undo/redo restauram o estado de comentários corretamente', async ({ page 
     await page.waitForTimeout(300);
     await expect(page.locator('#commentCount')).toHaveText('1');
 
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
     await page.keyboard.press('Control+z');
     await page.waitForTimeout(200);
     await expect(page.locator('#commentCount')).toHaveText('0');
@@ -120,7 +137,6 @@ test('importar JSON com comentário malicioso não executa script (regressão do
     const jsonPath = path.join(os.tmpdir(), `malicious-${Date.now()}.json`);
     fs.writeFileSync(jsonPath, maliciousJson);
 
-    await page.click('#importBtn');
     await page.locator('#jsonInput').setInputFiles(jsonPath);
     await page.waitForTimeout(500);
 
@@ -155,8 +171,8 @@ test('Esc num modal de confirmação não vaza para os atalhos globais do app (r
         window.flowAnimator.renderAnimationFrame();
     });
 
-    // Abre o modal de confirmação (Limpar Tudo) e confirma que apareceu.
-    await page.click('#clearBtn');
+    // Abre o modal de confirmação (Editar ▸ Limpar cena) e confirma que apareceu.
+    await clickMenuItem(page, 'editMenu', 'clearBtn');
     await expect(page.locator('.app-modal-overlay')).toBeVisible();
 
     // Esc deveria só cancelar o modal — não disparar o atalho global de Esc (que chama reset()
@@ -251,6 +267,7 @@ test('Ctrl+Z dentro do textarea não dispara o undo do canvas', async ({ page })
     await expect(page.locator('#drawCount')).toHaveText('1');
 
     // Ctrl+Z com o foco no textarea de comentário: NÃO deve desfazer a ação do canvas
+    await useCommentTool(page);
     await page.locator('#commentText').focus();
     await page.keyboard.press('Control+z');
     await page.waitForTimeout(150);
@@ -477,11 +494,13 @@ test('posicionar comentário em modo apagar não cria ação-fantasma', async ({
     const canvas = page.locator('#canvas');
     const box = await canvas.boundingBox();
 
-    // Modo apagar ativo + posicionamento de comentário
-    await page.click('[data-mode="erase"]');
+    // Posicionamento de comentário iniciado e, em seguida, troca para o apagador (E)
+    await useCommentTool(page);
     await page.fill('#commentText', 'Sem fantasma');
     await page.click('#addCommentBtn');
     await page.waitForTimeout(150);
+    await page.keyboard.press('e');
+    expect(await page.evaluate(() => window.flowAnimator.mode)).toBe('erase');
     await page.mouse.click(box.x + 300, box.y + 300);
     await page.waitForTimeout(200);
 
@@ -684,8 +703,9 @@ test('reimportar projeto com mesma assinatura de timeline atualiza DOM e delete 
     await page.locator('.timeline-item.comment').first().focus();
     await page.keyboard.press('Delete');
     await page.waitForTimeout(200);
-    await page.click('.app-modal-overlay [data-action="ok"]');
-    await page.waitForTimeout(200);
+    // Sem modal: a exclusão mostra um aviso com "Desfazer"
+    await expect(page.locator('.app-modal-overlay')).toHaveCount(0);
+    await expect(page.locator('.toast .toast-action')).toBeVisible();
     await expect(page.locator('#commentCount')).toHaveText('0');
     const commentsLeft = await page.evaluate(() => window.flowAnimator.comments.length);
     expect(commentsLeft).toBe(0);
@@ -709,21 +729,24 @@ test('layout inicial: sidebar e botões de zoom cabem na tela em 1366×768 (regr
     await gotoApp(page);
     const m = await page.evaluate(() => {
         const r = (sel) => document.querySelector(sel).getBoundingClientRect();
-        return { sidebarRight: r('.sidebar').right, sidebarLeft: r('.sidebar').left, fitRight: r('#fitBtn').right, vw: innerWidth };
+        return { sidebarRight: r('.inspector').right, sidebarLeft: r('.inspector').left, fitRight: r('#fitBtn').right, vw: innerWidth, docW: document.documentElement.scrollWidth };
     });
     // Antes: o canvas de 1920px empurrava a sidebar para x=1920 (fora da tela)
     expect(m.sidebarLeft).toBeLessThan(m.vw);
     expect(m.sidebarRight).toBeLessThanOrEqual(m.vw + 1);
     expect(m.fitRight).toBeLessThanOrEqual(m.vw);
+    expect(m.docW).toBeLessThanOrEqual(m.vw); // sem rolagem horizontal da página
 });
 
-test('barra de status não cobre a timeline (regressão)', async ({ page }) => {
+test('timeline cabe inteira na viewport, sem nada fixo por cima (regressão)', async ({ page }) => {
     await gotoApp(page);
-    const m = await page.evaluate(() => ({
-        timelineBottom: document.querySelector('.timeline-area').getBoundingClientRect().bottom,
-        statusTop: document.querySelector('.status-bar').getBoundingClientRect().top
-    }));
-    expect(m.timelineBottom).toBeLessThanOrEqual(m.statusTop + 0.5);
+    const m = await page.evaluate(() => {
+        const r = document.querySelector('.timeline-area').getBoundingClientRect();
+        const probe = document.elementFromPoint(r.left + r.width / 2, r.bottom - 4);
+        return { bottom: r.bottom, vh: innerHeight, insideTimeline: !!(probe && probe.closest('.timeline-area')) };
+    });
+    expect(m.bottom).toBeLessThanOrEqual(m.vh + 0.5);
+    expect(m.insideTimeline).toBe(true); // antes a barra de status fixa cobria o rodapé da timeline
 });
 
 test('importar PDF real usa isEvalSupported:false (CVE-2024-4367) e renderiza a página', async ({ page }) => {
@@ -756,7 +779,7 @@ test('botão ✂️ Região entra no modo crop sem erro de página (regressão)'
     const errors = [];
     page.on('pageerror', (err) => errors.push(err.message));
     await gotoApp(page);
-    await page.click('#cropRegionBtn');
+    await clickMenuItem(page, 'exportMenu', 'cropRegionBtn');
     await page.waitForTimeout(150);
     expect(errors).toEqual([]);
     expect(await page.evaluate(() => window.flowAnimator.mode)).toBe('crop');
@@ -829,7 +852,7 @@ test('"Limpar Tudo" é desfazível com Ctrl+Z (regressão)', async ({ page }) =>
     await drawStroke(page, [60, 140], [200, 160]);
     await drawStroke(page, [220, 40], [300, 120]);
     await expect(page.locator('#drawCount')).toHaveText('3');
-    await page.click('#clearBtn');
+    await clickMenuItem(page, 'editMenu', 'clearBtn');
     await page.click('.app-modal-overlay [data-action="ok"]');
     await expect(page.locator('#drawCount')).toHaveText('0');
     await page.keyboard.press('Control+z');
@@ -871,8 +894,8 @@ test('um aviso novo não é escondido pelo timer do anterior (regressão)', asyn
         await new Promise(r => setTimeout(r, 2500));
         fa.showTooltip('segundo');
         await new Promise(r => setTimeout(r, 900));
-        const el = document.getElementById('tooltip');
-        return getComputedStyle(el).display !== 'none' && el.textContent === 'segundo';
+        const toasts = Array.from(document.querySelectorAll('#toasts .toast-text')).map(e => e.textContent);
+        return toasts.includes('segundo');
     });
     expect(shown).toBe(true);
 });

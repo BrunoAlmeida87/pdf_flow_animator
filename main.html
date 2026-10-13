@@ -3,336 +3,522 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Animador de Fluxo de Diagramas PDF - Timeline Pro</title>
-    <script src="vendor/pdfjs/pdf.min.js"></script>
+    <meta name="description" content="Anime desenhos, setas e comentários sobre PDFs e imagens e exporte como vídeo — direto no navegador.">
+    <meta name="theme-color" content="#181b21">
+    <title>PDF Flow Animator</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232f6fe4'/%3E%3Cpath d='M6 16c3-8 7-8 12-8' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Cpath d='M14 5l4 3-4 3' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="css/styles.css">
+    <script src="vendor/pdfjs/pdf.min.js"></script>
+    <script src="vendor/perfect-freehand/perfect-freehand.js"></script>
 </head>
 <body>
-    <div class="app-container">
-        <!-- Header -->
-        <div class="header">
-            <div class="header-controls">
-                <input type="file" id="pdfInput" style="display: none;" accept=".pdf,.jpg,.jpeg,.png">
-                <button class="btn btn-primary" id="importFileBtn" data-i18n="btnImport">
-                    📁 Importar PDF/Imagem
-                </button>
-                
-                <div id="pageSelector" style="display: none; gap: 10px;">
-                    <select id="pageSelect" class="form-control" style="width: 120px;">
-                        <option value="1">Página 1</option>
-                    </select>
-                    <button class="btn btn-primary btn-icon" id="loadPageBtn" title="Carregar página" aria-label="Carregar página">
-                        📄
-                    </button>
-                </div>
-                
-                <div class="mode-selector">
-                    <button class="mode-btn active" data-mode="draw" data-i18n="modeDraw">✏️ Desenhar</button>
-                    <button class="mode-btn" data-mode="erase" data-i18n="modeErase">🧽 Apagar</button>
-                    <button class="mode-btn" data-mode="comment" data-i18n="modeComment">💬 Comentar</button>
-                </div>
-                
-                <div id="playControlsGroup" style="display: flex; gap: 5px;">
-                    <button class="btn btn-primary btn-icon" id="playBtn" title="Play" aria-label="Play">▶️</button>
-                    <button class="btn btn-warning btn-icon" id="pauseBtn" title="Pause" aria-label="Pause">⏸️</button>
-                    <button class="btn btn-danger btn-icon" id="resetBtn" title="Reset" aria-label="Reset">⏮️</button>
-                </div>
-                
-                <button class="btn btn-danger" id="clearBtn" data-i18n="btnClearAll">🗑️ Limpar Tudo</button>
-                
-                <div style="display: flex; gap: 5px;">
-                    <button class="btn btn-primary btn-icon" id="undoBtn" title="Desfazer (Ctrl+Z)" aria-label="Desfazer (Ctrl+Z)">↩</button>
-                    <button class="btn btn-primary btn-icon" id="redoBtn" title="Refazer (Ctrl+Y)" aria-label="Refazer (Ctrl+Y)">↪</button>
-                </div>
-                
-                <div style="display: flex; gap: 5px; margin-left: auto;">
-                    <button class="btn btn-success" id="saveBtn" data-i18n="btnSave">💾 Salvar</button>
-                    <button class="btn btn-primary" id="loadBtn" data-i18n="btnLoad">📂 Carregar</button>
-                    <button class="btn btn-success" id="exportBtn" data-i18n="btnExportJson">📤 Exportar JSON</button>
-                    <button class="btn btn-primary" id="importBtn" data-i18n="btnImportJson">📥 Importar JSON</button>
-                    <button class="btn btn-success" id="exportVideoBtn" data-i18n="btnExportVideo">🎬 Exportar Vídeo HD</button>
-                    <button class="btn btn-primary" id="cropRegionBtn" title="Selecionar região de gravação" aria-label="Selecionar região de gravação">✂️ Região</button>
-                    <button class="btn btn-warning" id="exportFramesBtn" style="display: none;" data-i18n="btnExportFrames">📸 Exportar Frames</button>
-                    <select class="form-control" id="langSelect" title="Idioma / Language" aria-label="Idioma / Language" style="width: auto;">
-                        <option value="pt-BR">🇧🇷 Português</option>
-                        <option value="en">🇺🇸 English</option>
-                    </select>
-                </div>
+    <!-- Ícones (SVG sprite, desenhados para este projeto; stroke = currentColor) -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="i-logo" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="5"/><path d="M6.5 16c2.5-6.5 6-7.5 10.5-7.5"/><path d="M14 5.5l3 3-3 3"/></symbol>
+        <symbol id="i-select" viewBox="0 0 24 24"><path d="M5 3.5l6.8 16.5 2.2-6.6 6.5-2.3z"/></symbol>
+        <symbol id="i-pen" viewBox="0 0 24 24"><path d="M15.6 4.4a2.2 2.2 0 0 1 3.1 3.1L8.1 18.1 4 19.5l1.4-4.1z"/><path d="M13.5 6.5l3.6 3.6"/></symbol>
+        <symbol id="i-highlighter" viewBox="0 0 24 24"><path d="M14.5 4.5l5 5-7.5 7.5-5-5z"/><path d="M7 12l-2.5 2.5V17h3.5l2.5-2.5"/><path d="M3.5 20.5h8"/></symbol>
+        <symbol id="i-eraser" viewBox="0 0 24 24"><path d="M8 20.5h12"/><path d="M4.6 14.6l8.3-8.3a2 2 0 0 1 2.8 0l3 3a2 2 0 0 1 0 2.8L12.3 18.5H8.6l-4-4a1.4 1.4 0 0 1 0-1.9z"/><path d="M9.5 9.7l5.8 5.8"/></symbol>
+        <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 19L19 5"/><path d="M9.5 5H19v9.5"/></symbol>
+        <symbol id="i-rect" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2"/></symbol>
+        <symbol id="i-ellipse" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="8.5" ry="6.5"/></symbol>
+        <symbol id="i-text" viewBox="0 0 24 24"><path d="M5 7V5h14v2"/><path d="M12 5v14"/><path d="M9 19h6"/></symbol>
+        <symbol id="i-comment" viewBox="0 0 24 24"><path d="M4 5h16v11H10l-4 3.5V16H4z"/></symbol>
+        <symbol id="i-badge" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M10.4 9.6l2-1.6v8"/></symbol>
+        <symbol id="i-laser" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.6"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></symbol>
+        <symbol id="i-spotlight" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="12" cy="12" r="4.2"/></symbol>
+        <symbol id="i-redact" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="1.5"/><path d="M7.5 7v10M12 7v10M16.5 7v10M3 12h18"/></symbol>
+        <symbol id="i-camera" viewBox="0 0 24 24"><rect x="2.5" y="6.5" width="13" height="11" rx="2"/><path d="M15.5 10.5l6-3.5v10l-6-3.5"/></symbol>
+        <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8.5 12.5V6a1.5 1.5 0 0 1 3 0v5"/><path d="M11.5 10.5V4.8a1.5 1.5 0 0 1 3 0v5.7"/><path d="M14.5 10.5V6.5a1.5 1.5 0 0 1 3 0V14"/><path d="M8.5 12l-1.7-1.7a1.6 1.6 0 0 0-2.3 2.3l3.9 4.9c1.3 1.6 2.9 2.5 5 2.5h.6a4 4 0 0 0 4-4v-3"/></symbol>
+        <symbol id="i-crop" viewBox="0 0 24 24"><path d="M6.5 2.5v13a2 2 0 0 0 2 2h13"/><path d="M17.5 21.5v-13a2 2 0 0 0-2-2h-13"/></symbol>
+        <symbol id="i-play" viewBox="0 0 24 24"><path d="M7.5 4.8v14.4L19 12z" fill="currentColor"/></symbol>
+        <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="4.8" width="3.6" height="14.4" rx="1" fill="currentColor"/><rect x="13.9" y="4.8" width="3.6" height="14.4" rx="1" fill="currentColor"/></symbol>
+        <symbol id="i-skip-back" viewBox="0 0 24 24"><path d="M18 5.5v13L9 12z" fill="currentColor"/><path d="M6 5.5v13"/></symbol>
+        <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 13.5L4.5 9 9 4.5"/><path d="M4.5 9h10a5 5 0 0 1 0 10H11"/></symbol>
+        <symbol id="i-redo" viewBox="0 0 24 24"><path d="M15 13.5L19.5 9 15 4.5"/><path d="M19.5 9h-10a5 5 0 0 0 0 10H13"/></symbol>
+        <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.6-4.6M10.5 7.8v5.4M7.8 10.5h5.4"/></symbol>
+        <symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.6-4.6M7.8 10.5h5.4"/></symbol>
+        <symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3.5H5.5a2 2 0 0 0-2 2V8M20.5 8V5.5a2 2 0 0 0-2-2H16M3.5 16v2.5a2 2 0 0 0 2 2H8M16 20.5h2.5a2 2 0 0 0 2-2V16"/></symbol>
+        <symbol id="i-center" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/></symbol>
+        <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+        <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/></symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 6.5h16M9.5 10.5v6M14.5 10.5v6M6 6.5l1 13h10l1-13M9 6.5v-3h6v3"/></symbol>
+        <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6.5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V8.5z"/><path d="M14 3v5.5h5.5"/></symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+        <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 20h14"/></symbol>
+        <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 20V9M7.5 13.5L12 9l4.5 4.5M5 4h14"/></symbol>
+        <symbol id="i-save" viewBox="0 0 24 24"><path d="M5.5 3.5H16l4.5 4.5v10.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2z"/><path d="M8 3.5v5h7.5v-5M8 20.5v-6.5h8v6.5"/></symbol>
+        <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7.5 3v18M16.5 3v18M3 8h4.5M3 16h4.5M16.5 8H21M16.5 16H21M3 12h18"/></symbol>
+        <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-8.5 9"/></symbol>
+        <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3.5"/></symbol>
+        <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 17.5V5.5l11-2v12"/><circle cx="6.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="15.5" r="2.5"/></symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+        <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+        <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+        <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></symbol>
+        <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+        <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .9-1 1.6v.6M12 17v.01"/></symbol>
+        <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M2.5 12h2M19.5 12h2M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+        <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></symbol>
+        <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5.5 21V4M5.5 4H17l-2.2 4L17 12H5.5"/></symbol>
+        <symbol id="i-captions" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10.5 10.3a2 2 0 1 0 0 3.4M17 10.3a2 2 0 1 0 0 3.4"/></symbol>
+        <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="12" height="12" rx="2"/><path d="M15.5 8.5V5.5a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/></symbol>
+        <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3.5l9 5-9 5-9-5z"/><path d="M3 13.5l9 5 9-5"/></symbol>
+        <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6.5h9M17 6.5h3M4 12h3M11 12h9M4 17.5h11M19 17.5h1"/><circle cx="15" cy="6.5" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17.5" r="2"/></symbol>
+        <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5L12 5l5.5 5.5"/></symbol>
+        <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6.5 13.5L12 19l5.5-5.5"/></symbol>
+        <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol>
+        <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M7.5 14h9"/></symbol>
+        <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+        <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3.5l1.8 4.7 4.7 1.8-4.7 1.8L12 16.5l-1.8-4.7L5.5 10l4.7-1.8z"/><path d="M18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></symbol>
+    </svg>
 
-                <input type="file" id="jsonInput" style="display: none;" accept=".json">
+    <div class="app" id="app">
+        <!-- ============ Top bar ============ -->
+        <header class="topbar">
+            <div class="brand"><svg class="icon"><use href="#i-logo"/></svg><span class="brand-name">Flow Animator</span></div>
+            <input type="text" id="projectName" class="project-name" value="Projeto sem título" maxlength="120" aria-label="Nome do projeto" data-i18n-title="projectName">
+            <span id="saveState" class="save-state" aria-live="polite"></span>
+
+            <div class="menu" id="fileMenu">
+                <button class="btn btn-ghost" aria-haspopup="menu" aria-expanded="false" data-i18n-title="menuFile" title="Arquivo"><svg class="icon only-narrow-icon"><use href="#i-folder"/></svg><span class="btn-label" data-i18n="menuFile">Arquivo</span><svg class="icon icon-sm"><use href="#i-chevron-down"/></svg></button>
+                <div class="menu-list" role="menu">
+                    <button class="menu-item" role="menuitem" id="newProjectBtn"><svg class="icon"><use href="#i-file"/></svg><span data-i18n="newProject">Novo projeto</span></button>
+                    <button class="menu-item" role="menuitem" id="projectsBtn"><svg class="icon"><use href="#i-folder"/></svg><span data-i18n="projects">Meus projetos…</span></button>
+                    <hr class="menu-sep">
+                    <button class="menu-item" role="menuitem" id="importFileBtn"><svg class="icon"><use href="#i-image"/></svg><span data-i18n="btnImport">Importar PDF ou imagem…</span></button>
+                    <button class="menu-item" role="menuitem" id="importAudioBtn"><svg class="icon"><use href="#i-music"/></svg><span data-i18n="importAudio">Importar áudio…</span></button>
+                    <hr class="menu-sep">
+                    <button class="menu-item" role="menuitem" id="saveBtn"><svg class="icon"><use href="#i-save"/></svg><span data-i18n="btnSave">Salvar</span><span class="shortcut">Ctrl+S</span></button>
+                    <button class="menu-item" role="menuitem" id="exportBtn"><svg class="icon"><use href="#i-download"/></svg><span data-i18n="btnExportJson">Salvar como arquivo (.json)…</span></button>
+                    <button class="menu-item" role="menuitem" id="importBtn"><svg class="icon"><use href="#i-upload"/></svg><span data-i18n="btnImportJson">Abrir arquivo de projeto…</span><span class="shortcut">Ctrl+O</span></button>
+                    <button class="menu-item" role="menuitem" id="loadBtn"><svg class="icon"><use href="#i-undo"/></svg><span data-i18n="btnLoad">Restaurar salvamento rápido</span></button>
+                </div>
             </div>
-        </div>
 
-        <!-- Main Content -->
-        <div class="main-content">
-            <!-- Canvas Area -->
-            <div class="canvas-area">
-                <div class="canvas-header">
-                    <div style="display: flex; gap: 10px; align-items: center;">
-                        <span id="fileName" data-i18n="noFileLoaded">Nenhum arquivo carregado</span>
-                        <span id="canvasInfo" style="color: #888; font-size: 11px;"></span>
-                    </div>
-                    <div style="display: flex; gap: 5px;">
-                        <button class="btn btn-primary btn-icon" id="zoomInBtn" title="Zoom +" aria-label="Zoom +">🔍+</button>
-                        <button class="btn btn-primary btn-icon" id="zoomOutBtn" title="Zoom -" aria-label="Zoom -">🔍-</button>
-                        <button class="btn btn-primary btn-icon" id="fitBtn" title="Ajustar à tela" aria-label="Ajustar à tela">⛶</button>
-                        <button class="btn btn-primary btn-icon" id="centerBtn" title="Centralizar" aria-label="Centralizar">⌖</button>
-                        <span id="zoomDisplay" style="color: #888; margin-left: 10px;">100%</span>
+            <div class="menu" id="editMenu">
+                <button class="btn btn-ghost" aria-haspopup="menu" aria-expanded="false" data-i18n-title="menuEdit" title="Editar"><svg class="icon only-narrow-icon"><use href="#i-edit"/></svg><span class="btn-label" data-i18n="menuEdit">Editar</span><svg class="icon icon-sm"><use href="#i-chevron-down"/></svg></button>
+                <div class="menu-list" role="menu">
+                    <button class="menu-item" role="menuitem" id="undoMenuBtn"><svg class="icon"><use href="#i-undo"/></svg><span data-i18n="undo">Desfazer</span><span class="shortcut">Ctrl+Z</span></button>
+                    <button class="menu-item" role="menuitem" id="redoMenuBtn"><svg class="icon"><use href="#i-redo"/></svg><span data-i18n="redo">Refazer</span><span class="shortcut">Ctrl+Y</span></button>
+                    <hr class="menu-sep">
+                    <button class="menu-item" role="menuitem" id="selectAllBtn"><svg class="icon"><use href="#i-select"/></svg><span data-i18n="selectAll">Selecionar tudo</span><span class="shortcut">Ctrl+A</span></button>
+                    <button class="menu-item" role="menuitem" id="duplicateBtn"><svg class="icon"><use href="#i-copy"/></svg><span data-i18n="duplicate">Duplicar seleção</span><span class="shortcut">Ctrl+D</span></button>
+                    <button class="menu-item" role="menuitem" id="deleteSelBtn"><svg class="icon"><use href="#i-trash"/></svg><span data-i18n="deleteSelection">Excluir seleção</span><span class="shortcut">Del</span></button>
+                    <hr class="menu-sep">
+                    <button class="menu-item" role="menuitem" id="addMarkerMenuBtn"><svg class="icon"><use href="#i-flag"/></svg><span data-i18n="addMarker">Adicionar marcador</span><span class="shortcut">M</span></button>
+                    <button class="menu-item" role="menuitem" id="fitDurationMenuBtn"><svg class="icon"><use href="#i-fit"/></svg><span data-i18n="fitDuration">Ajustar duração ao conteúdo</span></button>
+                    <hr class="menu-sep">
+                    <button class="menu-item danger" role="menuitem" id="clearBtn"><svg class="icon"><use href="#i-trash"/></svg><span data-i18n="btnClearAll">Limpar cena</span></button>
+                </div>
+            </div>
+
+            <div class="topbar-group hide-phone">
+                <button class="btn btn-ghost btn-icon" id="undoBtn" data-i18n-title="undoTitle" title="Desfazer (Ctrl+Z)" aria-label="Desfazer (Ctrl+Z)"><svg class="icon"><use href="#i-undo"/></svg></button>
+                <button class="btn btn-ghost btn-icon" id="redoBtn" data-i18n-title="redoTitle" title="Refazer (Ctrl+Y)" aria-label="Refazer (Ctrl+Y)"><svg class="icon"><use href="#i-redo"/></svg></button>
+            </div>
+
+            <div class="topbar-spacer"></div>
+
+            <div class="topbar-group">
+                <button class="btn btn-ghost btn-icon hide-phone" id="micToggleBtn" aria-pressed="false" data-i18n-title="micToggle" title="Gravar narração junto (microfone)" aria-label="Gravar narração junto (microfone)"><svg class="icon"><use href="#i-mic"/></svg></button>
+                <button class="btn btn-record" id="recordBtn" data-i18n-title="recordTitle" title="Gravar: cada traço entra na timeline em sequência"><span class="rec-dot"></span><span class="btn-label" data-i18n="record">Gravar</span></button>
+                <div class="menu align-right" id="exportMenu">
+                    <button class="btn btn-primary" id="exportMenuBtn" aria-haspopup="menu" aria-expanded="false"><svg class="icon"><use href="#i-download"/></svg><span class="btn-label" data-i18n="export">Exportar</span><svg class="icon icon-sm"><use href="#i-chevron-down"/></svg></button>
+                    <div class="menu-list" role="menu">
+                        <button class="menu-item" role="menuitem" id="exportVideoBtn"><svg class="icon"><use href="#i-film"/></svg><span data-i18n="btnExportVideo">Vídeo (MP4/WebM)…</span><span class="shortcut">Ctrl+E</span></button>
+                        <button class="menu-item" role="menuitem" id="exportGifBtn"><svg class="icon"><use href="#i-image"/></svg><span data-i18n="exportGif">GIF animado…</span></button>
+                        <button class="menu-item" role="menuitem" id="exportFramesBtn"><svg class="icon"><use href="#i-layers"/></svg><span data-i18n="btnExportFrames">Frames PNG (ZIP)</span></button>
+                        <button class="menu-item" role="menuitem" id="exportPngBtn"><svg class="icon"><use href="#i-image"/></svg><span data-i18n="exportPng">Frame atual (PNG)</span></button>
+                        <hr class="menu-sep">
+                        <button class="menu-item" role="menuitem" id="exportSrtBtn"><svg class="icon"><use href="#i-captions"/></svg><span data-i18n="exportSrt">Legendas (.srt)</span></button>
+                        <button class="menu-item" role="menuitem" id="exportVttBtn"><svg class="icon"><use href="#i-captions"/></svg><span data-i18n="exportVtt">Legendas (.vtt)</span></button>
+                        <hr class="menu-sep">
+                        <button class="menu-item" role="menuitem" id="cropRegionBtn"><svg class="icon"><use href="#i-crop"/></svg><span data-i18n="cropRegion">Definir região de gravação</span></button>
                     </div>
                 </div>
-                <div class="canvas-viewport">
-                    <div class="canvas-wrapper" id="canvasWrapper" style="position:relative;">
+            </div>
+
+            <div class="divider-v hide-phone"></div>
+
+            <div class="topbar-group">
+                <select class="form-control hide-phone" id="langSelect" title="Idioma / Language" aria-label="Idioma / Language" style="width:auto; height:30px">
+                    <option value="pt-BR">PT</option>
+                    <option value="en">EN</option>
+                </select>
+                <button class="btn btn-ghost btn-icon" id="themeBtn" data-i18n-title="themeToggle" title="Alternar tema claro/escuro" aria-label="Alternar tema claro/escuro"><svg class="icon"><use href="#i-sun"/></svg></button>
+                <button class="btn btn-ghost btn-icon hide-phone" id="helpBtn" data-i18n-title="shortcutsTitle" title="Atalhos de teclado (?)" aria-label="Atalhos de teclado (?)"><svg class="icon"><use href="#i-keyboard"/></svg></button>
+                <button class="btn btn-ghost btn-icon only-narrow" id="inspectorToggle" aria-expanded="false" data-i18n-title="inspectorToggle" title="Propriedades" aria-label="Propriedades"><svg class="icon"><use href="#i-sliders"/></svg></button>
+            </div>
+
+            <input type="file" id="pdfInput" hidden accept=".pdf,.jpg,.jpeg,.png,.webp,.gif,image/*,application/pdf">
+            <input type="file" id="jsonInput" hidden accept=".json,application/json">
+            <input type="file" id="audioInput" hidden accept="audio/*,.mp3,.wav,.ogg,.m4a,.webm">
+        </header>
+
+        <!-- ============ Workspace ============ -->
+        <div class="workspace">
+            <nav class="toolbar" role="toolbar" aria-orientation="vertical" data-i18n-title="toolsTitle" aria-label="Ferramentas">
+                <button class="tool-btn mode-btn" data-mode="select" data-i18n-title="toolSelect" title="Selecionar e mover (V)" aria-label="Selecionar e mover (V)"><svg class="icon"><use href="#i-select"/></svg></button>
+                <button class="tool-btn mode-btn" data-mode="pan" data-i18n-title="toolPan" title="Mover a visão (G)" aria-label="Mover a visão (G)"><svg class="icon"><use href="#i-hand"/></svg></button>
+                <div class="tool-sep"></div>
+                <button class="tool-btn mode-btn active" data-mode="draw" data-i18n-title="modeDraw" title="Caneta (D)" aria-label="Caneta (D)"><svg class="icon"><use href="#i-pen"/></svg></button>
+                <button class="tool-btn mode-btn" data-mode="highlighter" data-i18n-title="toolHighlighter" title="Marca-texto (H)" aria-label="Marca-texto (H)"><svg class="icon"><use href="#i-highlighter"/></svg></button>
+                <button class="tool-btn mode-btn" data-mode="erase" data-i18n-title="modeErase" title="Apagador (E)" aria-label="Apagador (E)"><svg class="icon"><use href="#i-eraser"/></svg></button>
+                <div class="tool-sep"></div>
+                <button class="tool-btn mode-btn" data-mode="arrow" data-i18n-title="toolArrow" title="Seta (A)" aria-label="Seta (A)"><svg class="icon"><use href="#i-arrow"/></svg></button>
+                <button class="tool-btn mode-btn" data-mode="rect" data-i18n-title="toolRect" title="Retângulo (R)" aria-label="Retângulo (R)"><svg class="icon"><use href="#i-rect"/></svg></button>
+                <button class="tool-btn mode-btn" data-mode="ellipse" data-i18n-title="toolEllipse" title="Elipse (O)" aria-label="Elipse (O)"><svg class="icon"><use href="#i-ellipse"/></svg></button>
+                <div class="tool-sep"></div>
+                <button class="tool-btn mode-btn" data-mode="comment" data-i18n-title="modeComment" title="Comentário / texto (C)" aria-label="Comentário / texto (C)"><svg class="icon"><use href="#i-comment"/></svg></button>
+                <button class="tool-btn mode-btn" data-mode="badge" data-i18n-title="toolBadge" title="Número de passo (N)" aria-label="Número de passo (N)"><svg class="icon"><use href="#i-badge"/></svg></button>
+                <button class="tool-btn mode-btn" data-mode="laser" data-i18n-title="toolLaser" title="Ponteiro laser (Z)" aria-label="Ponteiro laser (Z)"><svg class="icon"><use href="#i-laser"/></svg></button>
+                <div class="tool-sep"></div>
+                <button class="tool-btn mode-btn" data-mode="spotlight" data-i18n-title="toolSpotlight" title="Destaque / spotlight (S)" aria-label="Destaque / spotlight (S)"><svg class="icon"><use href="#i-spotlight"/></svg></button>
+                <button class="tool-btn mode-btn" data-mode="redact" data-i18n-title="toolRedact" title="Ocultar dados sensíveis (X)" aria-label="Ocultar dados sensíveis (X)"><svg class="icon"><use href="#i-redact"/></svg></button>
+                <button class="tool-btn mode-btn" data-mode="camera" data-i18n-title="toolCamera" title="Movimento de câmera (F)" aria-label="Movimento de câmera (F)"><svg class="icon"><use href="#i-camera"/></svg></button>
+                <input type="color" class="tool-color" id="quickColor" value="#4a90e2" data-i18n-title="quickColor" title="Cor atual" aria-label="Cor atual">
+            </nav>
+
+            <main class="stage">
+                <div class="stage-header">
+                    <div class="scene-switch">
+                        <button class="btn btn-ghost btn-icon btn-sm" id="scenePrevBtn" data-i18n-title="scenePrev" title="Cena anterior" aria-label="Cena anterior"><svg class="icon"><use href="#i-chevron-left"/></svg></button>
+                        <button class="btn btn-ghost btn-sm scene-btn" id="sceneBtn" data-i18n-title="scenesTitle" title="Cenas"><svg class="icon icon-sm"><use href="#i-layers"/></svg><span class="label" id="sceneLabel">Cena 1/1</span></button>
+                        <button class="btn btn-ghost btn-icon btn-sm" id="sceneNextBtn" data-i18n-title="sceneNext" title="Próxima cena" aria-label="Próxima cena"><svg class="icon"><use href="#i-chevron-right"/></svg></button>
+                    </div>
+                    <div class="stage-title">
+                        <span id="fileName" data-i18n="noFileLoaded">Quadro branco</span>
+                        <span id="canvasInfo" class="canvas-info"></span>
+                        <span id="recPill" class="rec-pill" hidden>REC 00:00</span>
+                    </div>
+                    <button class="btn btn-ghost btn-sm" id="cameraPreviewBtn" aria-pressed="false" data-i18n-title="cameraPreviewTitle" title="Ver a reprodução pelo enquadramento da câmera"><svg class="icon icon-sm"><use href="#i-camera"/></svg><span class="btn-label" data-i18n="cameraPreview">Câmera</span></button>
+                    <button class="btn btn-ghost btn-icon btn-sm" id="zoomOutBtn" data-i18n-title="zoomOut" title="Diminuir zoom (Ctrl −)" aria-label="Diminuir zoom"><svg class="icon"><use href="#i-zoom-out"/></svg></button>
+                    <span id="zoomDisplay" class="zoom-display">100%</span>
+                    <button class="btn btn-ghost btn-icon btn-sm" id="zoomInBtn" data-i18n-title="zoomIn" title="Aumentar zoom (Ctrl +)" aria-label="Aumentar zoom"><svg class="icon"><use href="#i-zoom-in"/></svg></button>
+                    <button class="btn btn-ghost btn-icon btn-sm" id="fitBtn" data-i18n-title="fitScreen" title="Ajustar à tela (Ctrl 0)" aria-label="Ajustar à tela"><svg class="icon"><use href="#i-fit"/></svg></button>
+                    <button class="btn btn-ghost btn-icon btn-sm" id="centerBtn" data-i18n-title="centerCanvas" title="Centralizar" aria-label="Centralizar"><svg class="icon"><use href="#i-center"/></svg></button>
+                </div>
+                <div class="canvas-viewport" id="canvasViewport">
+                    <div class="canvas-wrapper" id="canvasWrapper">
                         <canvas id="canvas"></canvas>
                         <canvas id="cropOverlay"></canvas>
                     </div>
+                    <div class="empty-state" id="emptyState">
+                        <div class="empty-card">
+                            <h2 data-i18n="emptyTitle">Comece seu vídeo explicativo</h2>
+                            <p data-i18n="emptyText">Importe um PDF ou imagem e anime desenhos, setas e comentários por cima — ou comece num quadro branco.</p>
+                            <div class="empty-actions">
+                                <button class="btn btn-primary" id="emptyImportBtn"><svg class="icon"><use href="#i-upload"/></svg><span data-i18n="emptyImport">Importar PDF ou imagem</span></button>
+                                <button class="btn btn-outline" id="emptyStartBlank"><svg class="icon"><use href="#i-pen"/></svg><span data-i18n="emptyBlank">Quadro branco</span></button>
+                                <button class="btn btn-outline" id="emptyExampleBtn"><svg class="icon"><use href="#i-sparkles"/></svg><span data-i18n="emptyExample">Ver exemplo</span></button>
+                            </div>
+                            <div class="empty-hint" data-i18n="emptyHint">ou arraste e solte um arquivo aqui · Ctrl+V cola uma imagem</div>
+                            <div class="recent-list" id="recentList" hidden></div>
+                        </div>
+                    </div>
+                    <div class="drop-overlay" id="dropOverlay" data-i18n="dropHere">Solte para importar</div>
                 </div>
-            </div>
-            
-            <!-- Sidebar -->
-            <div class="sidebar">
-                <div class="section-header" data-i18n="sectionDraw">🎨 Configurações de Desenho</div>
-                <div class="form-group">
-                    <label class="form-label" for="flowColor" data-i18n="labelDrawColor">Cor do Desenho</label>
-                    <input type="color" class="color-picker" id="flowColor" value="#4a90e2">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label" for="lineWidth" data-i18n="labelLineWidth">Espessura da Linha</label>
-                    <input type="range" class="slider" id="lineWidth" min="1" max="20" value="3">
-                    <span id="lineWidthDisplay">3px</span>
-                </div>
-                
-                <div class="form-group">
-                    <small style="color: #4a90e2; line-height: 1.6;">
-                        📏 <strong>Alt:</strong> linha reta livre<br>
-                        📐 <strong>Shift:</strong> snap a 0° / 45° / 90° / 135°
-                    </small>
-                </div>
-                
-                <div class="section-header" data-i18n="sectionErase">🧽 Configurações de Apagar</div>
-                <div class="form-group">
-                    <label class="form-label" for="eraseSize" data-i18n="labelEraseSize">Tamanho do Apagador</label>
-                    <input type="range" class="slider" id="eraseSize" min="5" max="50" value="20">
-                    <span id="eraseSizeDisplay">20px</span>
-                </div>
-                
-                <div class="section-header" data-i18n="sectionComments">💬 Comentários</div>
-                <div class="form-group">
-                    <label class="form-label" for="commentText" data-i18n="labelCommentText">Texto do Comentário</label>
-                    <textarea class="form-control" id="commentText" rows="3" placeholder="Digite seu comentário... Emojis são suportados! 🎉"></textarea>
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label" for="commentTextColor" data-i18n="labelTextColor">Cor do Texto</label>
-                    <input type="color" class="color-picker" id="commentTextColor" value="#333333">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label" for="commentBgColor" data-i18n="labelBgColor">Cor do Fundo</label>
-                    <input type="color" class="color-picker" id="commentBgColor" value="#ffffff">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label" for="commentBorderColor" data-i18n="labelBorderColor">Cor da Borda</label>
-                    <input type="color" class="color-picker" id="commentBorderColor" value="#f39c12">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label" for="commentFontFamily" data-i18n="labelFont">Fonte</label>
-                    <select class="form-control" id="commentFontFamily">
-                        <option value="Arial">Arial</option>
-                        <option value="Times New Roman">Times New Roman</option>
-                        <option value="Courier New">Courier New</option>
-                        <option value="Helvetica">Helvetica</option>
-                        <option value="Verdana">Verdana</option>
-                        <option value="Georgia">Georgia</option>
-                        <option value="Comic Sans MS">Comic Sans MS</option>
-                        <option value="Impact">Impact</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label" for="commentFontSize" data-i18n="labelFontSize">Tamanho da Fonte</label>
-                    <input type="range" class="slider" id="commentFontSize" min="12" max="48" value="16">
-                    <span id="fontSizeDisplay">16px</span>
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label" for="commentOpacity" data-i18n="labelOpacity">Opacidade do Fundo</label>
-                    <input type="range" class="slider" id="commentOpacity" min="0.1" max="1" step="0.1" value="0.9">
-                    <span id="opacityDisplay">90%</span>
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label" for="commentTime" data-i18n="labelCommentTime">Tempo de Aparição (s)</label>
-                    <input type="number" class="form-control" id="commentTime" value="0" min="0" step="0.1">
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label" for="commentDuration" data-i18n="labelCommentDuration">Duração (s)</label>
-                    <input type="number" class="form-control" id="commentDuration" value="3" min="0.5" max="10" step="0.5">
-                </div>
-                
-                <button class="btn btn-primary" id="addCommentBtn" style="width: 100%;" data-i18n="btnPositionComment">
-                    📍 Posicionar Comentário
-                </button>
-                
-                <div style="font-size: 11px; line-height: 1.4; color: #aaa; background: #1a1a1a; padding: 8px; border-radius: 4px; margin-top: 10px; border-left: 3px solid #f39c12;">
-                    <strong style="color: #f39c12;">💡 COMO USAR:</strong><br>
-                    • <strong>Botão "📍 Posicionar":</strong> Clique para ativar modo de posicionamento<br>
-                    • <strong>Clique no canvas:</strong> Onde deseja colocar o comentário<br>
-                    • <strong>Arrastar comentários:</strong> Clique e arraste em <em>qualquer modo</em><br>
-                    • <strong>ESC:</strong> Cancela posicionamento
-                </div>
-                
-                <div class="emoji-picker">
-                    <button type="button" class="emoji-btn" data-emoji="😊" aria-label="Inserir emoji 😊">😊</button>
-                    <button type="button" class="emoji-btn" data-emoji="😄" aria-label="Inserir emoji 😄">😄</button>
-                    <button type="button" class="emoji-btn" data-emoji="🎉" aria-label="Inserir emoji 🎉">🎉</button>
-                    <button type="button" class="emoji-btn" data-emoji="⭐" aria-label="Inserir emoji ⭐">⭐</button>
-                    <button type="button" class="emoji-btn" data-emoji="❤️" aria-label="Inserir emoji ❤️">❤️</button>
-                    <button type="button" class="emoji-btn" data-emoji="👍" aria-label="Inserir emoji 👍">👍</button>
-                    <button type="button" class="emoji-btn" data-emoji="👎" aria-label="Inserir emoji 👎">👎</button>
-                    <button type="button" class="emoji-btn" data-emoji="🔥" aria-label="Inserir emoji 🔥">🔥</button>
-                    <button type="button" class="emoji-btn" data-emoji="💡" aria-label="Inserir emoji 💡">💡</button>
-                    <button type="button" class="emoji-btn" data-emoji="✅" aria-label="Inserir emoji ✅">✅</button>
-                    <button type="button" class="emoji-btn" data-emoji="❌" aria-label="Inserir emoji ❌">❌</button>
-                    <button type="button" class="emoji-btn" data-emoji="⚠️" aria-label="Inserir emoji ⚠️">⚠️</button>
-                    <button type="button" class="emoji-btn" data-emoji="🚀" aria-label="Inserir emoji 🚀">🚀</button>
-                    <button type="button" class="emoji-btn" data-emoji="📝" aria-label="Inserir emoji 📝">📝</button>
-                    <button type="button" class="emoji-btn" data-emoji="🎯" aria-label="Inserir emoji 🎯">🎯</button>
-                    <button type="button" class="emoji-btn" data-emoji="💎" aria-label="Inserir emoji 💎">💎</button>
-                </div>
-                
-                <div class="section-header" style="margin-top: 20px;" data-i18n="sectionAnimation">⚙️ Configurações de Animação</div>
-                <div class="form-group">
-                    <label class="form-label" for="animSpeed" data-i18n="labelSpeed">Velocidade de Reprodução</label>
-                    <input type="range" class="slider" id="animSpeed" min="0.1" max="2" step="0.1" value="1">
-                    <span id="speedDisplay">1.0x</span>
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label" for="totalDuration" data-i18n="labelTotalDuration">Duração Total (s)</label>
-                    <input type="number" class="form-control" id="totalDuration" value="10" min="5" max="300" step="1">
-                </div>
-                
-                <div class="form-group">
-                    <label for="persistPaths">
-                        <input type="checkbox" id="persistPaths" checked>
-                        <span data-i18n="labelPersistPaths">Manter desenhos após animação</span>
-                    </label>
-                </div>
-                
-                <div class="section-header" style="margin-top: 20px;" data-i18n="sectionTimeline">🎬 Sistema de Timeline Avançado</div>
-                <div style="font-size: 11px; line-height: 1.4; color: #aaa; background: #1a1a1a; padding: 10px; border-radius: 4px; border-left: 3px solid #4a90e2;">
-                    <strong style="color: #4a90e2;">📍 Itens paralelos:</strong><br>
-                    • Itens que acontecem ao mesmo tempo ganham <strong>linhas próprias</strong> na track<br>
-                    • <strong>Arrastar:</strong> move no tempo (snap de 0,5s; <strong>Shift</strong> desliga)<br>
-                    • <strong>Bordas:</strong> redimensionam a duração<br>
-                    • <strong>Duplo-clique:</strong> leva a agulha até o item<br>
-                    • <strong>Tab + ←/→:</strong> move o item focado (Shift = 1s); <strong>Delete</strong> remove
-                </div>
-                
-                <div class="section-header" style="margin-top: 20px;" data-i18n="sectionStats">📊 Estatísticas</div>
-                <div style="font-size: 12px; line-height: 1.6;">
-                    <div>Desenhos: <span id="drawCount">0</span></div>
-                    <div>Apagadas: <span id="eraseCount">0</span></div>
-                    <div>Comentários: <span id="commentCount">0</span></div>
-                    <div>Fim do conteúdo: <span id="realDuration">0s</span></div>
-                </div>
-            </div>
-        </div>
+            </main>
 
-        <!-- Timeline Area -->
-        <div class="timeline-area">
-            <div class="resize-handle-vertical" style="top: 0; transform: translateY(-2px);"></div>
-            
-            <div class="timeline-header">
-                <div class="timeline-controls">
-                    <button class="btn btn-primary btn-icon" id="timelinePlayBtn" title="Play" aria-label="Play">▶️</button>
-                    <button class="btn btn-warning btn-icon" id="timelinePauseBtn" title="Pause" aria-label="Pause">⏸️</button>
-                    <button class="btn btn-danger btn-icon" id="timelineResetBtn" title="Reset" aria-label="Reset">⏮️</button>
-                    <div class="time-display" id="timeDisplay">00:00 / 00:10</div>
-                    
-                    <div style="margin-left: 20px; display: flex; gap: 5px;">
-                        <button class="btn btn-primary btn-icon" id="zoomInTimelineBtn" title="Zoom In" aria-label="Zoom In">🔍+</button>
-                        <button class="btn btn-primary btn-icon" id="zoomOutTimelineBtn" title="Zoom Out" aria-label="Zoom Out">🔍-</button>
-                        <button class="btn btn-primary btn-icon" id="fitTimelineBtn" title="Ajustar" aria-label="Ajustar">⛶</button>
-                        <span style="color: #888; margin-left: 10px;">Zoom: <span id="timelineZoom">100%</span></span>
+            <!-- ============ Inspector (painéis contextuais) ============ -->
+            <aside class="inspector" id="inspector" aria-label="Propriedades">
+                <div class="inspector-scroll">
+                    <section class="panel" id="selectionPanel" hidden></section>
+
+                    <!-- Caneta / formas -->
+                    <section class="panel" data-panel="draw arrow rect ellipse">
+                        <div class="panel-title"><svg class="icon"><use href="#i-pen"/></svg><span id="drawPanelTitle" data-i18n="sectionDraw">Caneta</span></div>
+                        <div class="field">
+                            <label class="form-label" for="flowColor" data-i18n="labelDrawColor">Cor</label>
+                            <div class="swatches" data-swatches="flowColor"></div>
+                            <input type="color" class="sr-only" id="flowColor" value="#4a90e2">
+                        </div>
+                        <div class="field">
+                            <label class="form-label" for="lineWidth"><span data-i18n="labelLineWidth">Espessura</span><span class="value" id="lineWidthDisplay">3px</span></label>
+                            <input type="range" class="slider" id="lineWidth" min="1" max="40" value="3">
+                        </div>
+                        <div class="field" data-only="draw">
+                            <span class="form-label" data-i18n="penStyle">Estilo do traço</span>
+                            <div class="segmented" id="penStyle" role="group" aria-label="Estilo do traço">
+                                <button data-value="smooth" class="active" aria-pressed="true" data-i18n="penSmooth">Suave</button>
+                                <button data-value="pen" aria-pressed="false" data-i18n="penPressure">Caneta (pressão)</button>
+                            </div>
+                        </div>
+                        <div class="field" data-only="rect ellipse">
+                            <label class="check"><input type="checkbox" id="shapeFill"><span data-i18n="shapeFill">Preencher (translúcido)</span></label>
+                        </div>
+                        <p class="hint" data-only="draw" data-i18n-html="hintStraight"><kbd>Alt</kbd> linha reta livre · <kbd>Shift</kbd> snap a 45°</p>
+                        <p class="hint" data-only="arrow rect ellipse" data-i18n-html="hintShape">Arraste no canvas. <kbd>Shift</kbd> mantém proporção / ângulos de 45°.</p>
+                    </section>
+
+                    <section class="panel" data-panel="highlighter">
+                        <div class="panel-title"><svg class="icon"><use href="#i-highlighter"/></svg><span data-i18n="toolHighlighterName">Marca-texto</span></div>
+                        <div class="field">
+                            <label class="form-label" for="highlightColor" data-i18n="labelDrawColor">Cor</label>
+                            <div class="swatches" data-swatches="highlightColor"></div>
+                            <input type="color" class="sr-only" id="highlightColor" value="#ffd400">
+                        </div>
+                        <div class="field">
+                            <label class="form-label" for="highlightWidth"><span data-i18n="labelLineWidth">Espessura</span><span class="value" id="highlightWidthDisplay">22px</span></label>
+                            <input type="range" class="slider" id="highlightWidth" min="6" max="80" value="22">
+                        </div>
+                    </section>
+
+                    <section class="panel" data-panel="erase">
+                        <div class="panel-title"><svg class="icon"><use href="#i-eraser"/></svg><span data-i18n="sectionErase">Apagador</span></div>
+                        <div class="field">
+                            <label class="form-label" for="eraseSize"><span data-i18n="labelEraseSize">Tamanho</span><span class="value" id="eraseSizeDisplay">20px</span></label>
+                            <input type="range" class="slider" id="eraseSize" min="5" max="120" value="20">
+                        </div>
+                        <p class="hint" data-i18n="hintErase">Apaga só os seus traços — o PDF/imagem de fundo nunca é afetado.</p>
+                    </section>
+
+                    <section class="panel" data-panel="comment">
+                        <div class="panel-title"><svg class="icon"><use href="#i-comment"/></svg><span data-i18n="sectionComments">Comentário</span></div>
+                        <div class="field">
+                            <label class="form-label" for="commentText" data-i18n="labelCommentText">Texto</label>
+                            <textarea class="form-control" id="commentText" rows="3" data-i18n-placeholder="commentPlaceholder" placeholder="Digite e clique no canvas — ou clique direto no canvas para escrever ali."></textarea>
+                            <div class="emoji-picker">
+                                <button type="button" class="emoji-btn" data-emoji="👉" aria-label="👉">👉</button>
+                                <button type="button" class="emoji-btn" data-emoji="✅" aria-label="✅">✅</button>
+                                <button type="button" class="emoji-btn" data-emoji="❌" aria-label="❌">❌</button>
+                                <button type="button" class="emoji-btn" data-emoji="⚠️" aria-label="⚠️">⚠️</button>
+                                <button type="button" class="emoji-btn" data-emoji="💡" aria-label="💡">💡</button>
+                                <button type="button" class="emoji-btn" data-emoji="⭐" aria-label="⭐">⭐</button>
+                                <button type="button" class="emoji-btn" data-emoji="🔥" aria-label="🔥">🔥</button>
+                                <button type="button" class="emoji-btn" data-emoji="🎯" aria-label="🎯">🎯</button>
+                                <button type="button" class="emoji-btn" data-emoji="🚀" aria-label="🚀">🚀</button>
+                                <button type="button" class="emoji-btn" data-emoji="📝" aria-label="📝">📝</button>
+                            </div>
+                        </div>
+                        <div class="field-row">
+                            <div class="field"><label class="form-label" for="commentTextColor" data-i18n="labelTextColor">Texto</label><input type="color" class="color-picker" id="commentTextColor" value="#222222"></div>
+                            <div class="field"><label class="form-label" for="commentBgColor" data-i18n="labelBgColor">Fundo</label><input type="color" class="color-picker" id="commentBgColor" value="#ffffff"></div>
+                            <div class="field"><label class="form-label" for="commentBorderColor" data-i18n="labelBorderColor">Borda</label><input type="color" class="color-picker" id="commentBorderColor" value="#f39c12"></div>
+                        </div>
+                        <div class="field-row">
+                            <div class="field">
+                                <label class="form-label" for="commentFontFamily" data-i18n="labelFont">Fonte</label>
+                                <select class="form-control" id="commentFontFamily">
+                                    <option value="Arial">Arial</option>
+                                    <option value="Helvetica">Helvetica</option>
+                                    <option value="Verdana">Verdana</option>
+                                    <option value="Georgia">Georgia</option>
+                                    <option value="Times New Roman">Times New Roman</option>
+                                    <option value="Courier New">Courier New</option>
+                                    <option value="Comic Sans MS">Comic Sans MS</option>
+                                    <option value="Impact">Impact</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label class="form-label" for="commentFontSize"><span data-i18n="labelFontSize">Tamanho</span><span class="value" id="fontSizeDisplay">24px</span></label>
+                                <input type="range" class="slider" id="commentFontSize" min="12" max="96" value="24">
+                            </div>
+                        </div>
+                        <div class="field">
+                            <label class="form-label" for="commentOpacity"><span data-i18n="labelOpacity">Opacidade do fundo</span><span class="value" id="opacityDisplay">95%</span></label>
+                            <input type="range" class="slider" id="commentOpacity" min="0" max="1" step="0.05" value="0.95">
+                        </div>
+                        <div class="field-row">
+                            <div class="field">
+                                <label class="form-label" for="commentAnimIn" data-i18n="animIn">Entrada</label>
+                                <select class="form-control" id="commentAnimIn"></select>
+                            </div>
+                            <div class="field">
+                                <label class="form-label" for="commentAnimOut" data-i18n="animOut">Saída</label>
+                                <select class="form-control" id="commentAnimOut"></select>
+                            </div>
+                        </div>
+                        <div class="field">
+                            <label class="check"><input type="checkbox" id="commentBalloon"><span data-i18n="balloon">Balão com seta apontando</span></label>
+                        </div>
+                        <div class="field-row">
+                            <div class="field">
+                                <label class="form-label" for="commentTime" data-i18n="labelCommentTime">Aparece em (s)</label>
+                                <input type="number" class="form-control" id="commentTime" value="0" min="0" step="0.1">
+                            </div>
+                            <div class="field">
+                                <label class="form-label" for="commentDuration" data-i18n="labelCommentDuration">Duração (s)</label>
+                                <input type="number" class="form-control" id="commentDuration" value="3" min="0.2" max="600" step="0.5">
+                            </div>
+                        </div>
+                        <div class="btn-grid">
+                            <button class="btn btn-outline btn-sm" id="setCurrentTimeBtn" data-i18n="useCurrentTime">Usar tempo da agulha</button>
+                            <button class="btn btn-primary btn-sm" id="addCommentBtn" data-i18n="btnPositionComment">Posicionar no canvas</button>
+                        </div>
+                    </section>
+
+                    <section class="panel" data-panel="badge">
+                        <div class="panel-title"><svg class="icon"><use href="#i-badge"/></svg><span data-i18n="toolBadgeName">Número de passo</span></div>
+                        <div class="field-row">
+                            <div class="field"><label class="form-label" for="badgeColor" data-i18n="labelDrawColor">Cor</label><input type="color" class="color-picker" id="badgeColor" value="#e74c3c"></div>
+                            <div class="field"><label class="form-label" for="badgeNext" data-i18n="badgeNext">Próximo número</label><input type="number" class="form-control" id="badgeNext" value="1" min="0" max="999"></div>
+                        </div>
+                        <p class="hint" data-i18n="hintBadge">Clique no canvas para marcar a ordem dos passos (1, 2, 3…). Cada número aparece com um “pop” na agulha.</p>
+                    </section>
+
+                    <section class="panel" data-panel="laser">
+                        <div class="panel-title"><svg class="icon"><use href="#i-laser"/></svg><span data-i18n="toolLaserName">Ponteiro laser</span></div>
+                        <div class="field"><label class="form-label" for="laserColor" data-i18n="labelDrawColor">Cor</label><input type="color" class="color-picker" id="laserColor" value="#ff3b30"></div>
+                        <p class="hint" data-i18n="hintLaser">Aponte enquanto arrasta: no vídeo aparece um ponto luminoso com rastro que some — não deixa marca.</p>
+                    </section>
+
+                    <section class="panel" data-panel="spotlight">
+                        <div class="panel-title"><svg class="icon"><use href="#i-spotlight"/></svg><span data-i18n="toolSpotlightName">Destaque</span></div>
+                        <div class="field">
+                            <label class="form-label" for="spotlightDim"><span data-i18n="spotDim">Escurecer o resto</span><span class="value" id="spotlightDimDisplay">60%</span></label>
+                            <input type="range" class="slider" id="spotlightDim" min="0.2" max="0.9" step="0.05" value="0.6">
+                        </div>
+                        <div class="field">
+                            <span class="form-label" data-i18n="shapeLabel">Formato</span>
+                            <div class="segmented" id="spotlightShape" role="group">
+                                <button data-value="rect" class="active" aria-pressed="true" data-i18n="shapeRect">Retângulo</button>
+                                <button data-value="ellipse" aria-pressed="false" data-i18n="shapeEllipse">Elipse</button>
+                            </div>
+                        </div>
+                        <p class="hint" data-i18n="hintSpotlight">Arraste sobre a área a destacar. Durante o item, todo o resto escurece.</p>
+                    </section>
+
+                    <section class="panel" data-panel="redact">
+                        <div class="panel-title"><svg class="icon"><use href="#i-redact"/></svg><span data-i18n="toolRedactName">Ocultar dados</span></div>
+                        <div class="field">
+                            <label class="form-label" for="redactMode" data-i18n="redactMode">Modo</label>
+                            <select class="form-control" id="redactMode"></select>
+                        </div>
+                        <p class="hint" data-i18n="hintRedact">Arraste sobre dados sensíveis (nomes, valores, e-mails). A área fica ilegível no vídeo inteiro por padrão.</p>
+                    </section>
+
+                    <section class="panel" data-panel="camera">
+                        <div class="panel-title"><svg class="icon"><use href="#i-camera"/></svg><span data-i18n="toolCameraName">Câmera</span></div>
+                        <p class="hint" data-i18n="hintCamera">Posicione a agulha e arraste um retângulo: a câmera faz zoom/pan até ele a partir desse momento. Use “Câmera” no topo do canvas para pré-visualizar.</p>
+                    </section>
+
+                    <section class="panel" data-panel="select">
+                        <div class="panel-title"><svg class="icon"><use href="#i-select"/></svg><span data-i18n="toolSelectName">Selecionar</span></div>
+                        <p class="hint" data-i18n-html="hintSelect">Clique para selecionar, <kbd>Shift</kbd>+clique adiciona, arraste no vazio para selecionar vários. Arraste para mover; o canto redimensiona. <kbd>Del</kbd> exclui · <kbd>Ctrl+D</kbd> duplica.</p>
+                    </section>
+
+                    <section class="panel" data-panel="pan">
+                        <div class="panel-title"><svg class="icon"><use href="#i-hand"/></svg><span data-i18n="toolPanName">Mover visão</span></div>
+                        <p class="hint" data-i18n-html="hintPan">Arraste para mover. <kbd>Ctrl</kbd>+roda do mouse (ou pinça) dá zoom no ponto do cursor.</p>
+                    </section>
+
+                    <!-- Sempre visível -->
+                    <section class="panel" id="animationPanel">
+                        <div class="panel-title"><svg class="icon"><use href="#i-film"/></svg><span data-i18n="sectionAnimation">Cena e animação</span></div>
+                        <div class="field">
+                            <label class="form-label" for="sceneNameInput" data-i18n="sceneName">Nome da cena</label>
+                            <input type="text" class="form-control" id="sceneNameInput" maxlength="80">
+                        </div>
+                        <div class="field">
+                            <label class="form-label" for="totalDuration" data-i18n="labelTotalDuration">Duração (s)</label>
+                            <div class="input-row">
+                                <input type="number" class="form-control" id="totalDuration" value="10" min="1" max="3600" step="1">
+                                <button class="btn btn-outline btn-sm" id="fitDurationBtn" data-i18n="fitDurationShort">Ajustar ao conteúdo</button>
+                            </div>
+                        </div>
+                        <div class="field">
+                            <label class="form-label" for="animSpeed"><span data-i18n="labelSpeed">Velocidade de reprodução</span><span class="value" id="speedDisplay">1.0x</span></label>
+                            <input type="range" class="slider" id="animSpeed" min="0.25" max="3" step="0.25" value="1">
+                        </div>
+                        <div class="field" id="sceneBgField">
+                            <label class="form-label" for="sceneBgColor" data-i18n="sceneBg">Fundo do quadro branco</label>
+                            <input type="color" class="color-picker" id="sceneBgColor" value="#ffffff">
+                        </div>
+                        <div class="field">
+                            <label class="check" for="persistPaths"><input type="checkbox" id="persistPaths" checked><span data-i18n="labelPersistPaths">Manter desenhos após animação</span></label>
+                        </div>
+                    </section>
+                </div>
+                <div class="inspector-footer">
+                    <div class="stats" aria-live="polite">
+                        <span><span data-i18n="statDraws">Desenhos</span>: <b id="drawCount">0</b></span>
+                        <span><span data-i18n="statErases">Apagadas</span>: <b id="eraseCount">0</b></span>
+                        <span><span data-i18n="statComments">Comentários</span>: <b id="commentCount">0</b></span>
+                        <span><span data-i18n="statEnd">Fim do conteúdo</span>: <b id="realDuration">0s</b></span>
                     </div>
                 </div>
-                
-                <div style="display: flex; gap: 10px;">
-                    <button class="btn btn-danger" id="clearTimelineBtn">🗑️ Limpar Timeline</button>
+            </aside>
+        </div>
+
+        <!-- ============ Timeline ============ -->
+        <section class="timeline-area" aria-label="Timeline">
+            <div class="resize-handle-vertical" id="timelineResize" role="separator" aria-orientation="horizontal" data-i18n-title="resizeTimeline" title="Arraste para redimensionar a timeline"></div>
+            <div class="timeline-header">
+                <div class="timeline-controls">
+                    <button class="btn btn-ghost btn-icon" id="timelineResetBtn" data-i18n-title="toStart" title="Voltar ao início (Home)" aria-label="Voltar ao início (Home)"><svg class="icon"><use href="#i-skip-back"/></svg></button>
+                    <button class="btn btn-primary btn-icon" id="timelinePlayBtn" data-i18n-title="playPause" title="Reproduzir / pausar (Espaço)" aria-label="Reproduzir / pausar (Espaço)"><svg class="icon"><use href="#i-play"/></svg></button>
+                    <div class="time-display" id="timeDisplay">00:00.0 / 00:10.0</div>
+                    <button class="btn btn-ghost btn-sm" id="narrateBtn" data-i18n-title="narrateTitle" title="Narrar: reproduz a cena e grava sua voz por cima"><svg class="icon icon-sm"><use href="#i-mic"/></svg><span class="btn-label" data-i18n="narrate">Narrar</span></button>
+                    <button class="btn btn-ghost btn-icon btn-sm" id="addMarkerBtn" data-i18n-title="addMarkerTitle" title="Adicionar marcador na agulha (M)" aria-label="Adicionar marcador (M)"><svg class="icon"><use href="#i-flag"/></svg></button>
+                </div>
+                <div class="timeline-controls">
+                    <button class="btn btn-ghost btn-icon btn-sm" id="zoomOutTimelineBtn" data-i18n-title="zoomOut" title="Diminuir zoom" aria-label="Diminuir zoom"><svg class="icon"><use href="#i-zoom-out"/></svg></button>
+                    <span class="timeline-zoom-label hide-phone" id="timelineZoom">100%</span>
+                    <button class="btn btn-ghost btn-icon btn-sm" id="zoomInTimelineBtn" data-i18n-title="zoomIn" title="Aumentar zoom" aria-label="Aumentar zoom"><svg class="icon"><use href="#i-zoom-in"/></svg></button>
+                    <button class="btn btn-ghost btn-icon btn-sm" id="fitTimelineBtn" data-i18n-title="fitTimeline" title="Ajustar à largura" aria-label="Ajustar à largura"><svg class="icon"><use href="#i-fit"/></svg></button>
                 </div>
             </div>
-            
             <div class="timeline-body">
-                <!-- Track Headers -->
                 <div class="timeline-tracks-panel" id="trackHeaders"></div>
-                
-                <!-- Timeline Content -->
                 <div class="timeline-content-area">
-                    <!-- Ruler -->
                     <div class="timeline-ruler" id="timelineRuler">
                         <div class="timeline-ruler-marks" id="rulerMarks"></div>
                         <div class="timeline-playhead" id="playhead" style="left: 0;"></div>
                     </div>
-                    
-                    <!-- Scrollable Timeline -->
                     <div class="timeline-scrollable" id="timelineScrollable">
                         <div class="timeline-grid" id="timelineGrid"></div>
                         <div class="timeline-tracks-container" id="timelineTracks"></div>
                     </div>
                 </div>
             </div>
-        </div>
+        </section>
     </div>
 
-    <!-- Preview do cursor -->
+    <!-- Overlays -->
     <div class="brush-preview" id="brushPreview"></div>
     <div class="eraser-preview" id="eraserPreview"></div>
-
-    <!-- Status Bar -->
-    <div class="status-bar">
-        <div data-i18n="statusReady">Pronto</div>
-        <div id="statusInfo"></div>
-    </div>
-
-    <!-- Indicators -->
-    <div class="recording-indicator" id="recordingIndicator">
-        🔴 GRAVANDO VÍDEO HD
-    </div>
-    
+    <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+    <div class="recording-indicator" id="recordingIndicator">● REC</div>
     <div class="straight-line-indicator" id="straightLineIndicator">
-        <span id="straightLineLabel">📐 Linha Reta</span>
+        <span id="straightLineLabel">Linha reta</span>
         <span id="angleDisplay">—</span>
     </div>
-    
-    <div class="progress-bar" id="progressBar">
-        <div>Exportando vídeo...</div>
-        <div class="progress-fill">
-            <div class="progress-fill-bar" id="progressFillBar"></div>
+    <div class="progress-bar" id="progressBar" role="dialog" aria-modal="true" aria-labelledby="progressTitle">
+        <div class="progress-card">
+            <div class="title" id="progressTitle">Exportando…</div>
+            <div class="progress-fill"><div class="progress-fill-bar" id="progressFillBar"></div></div>
+            <div class="progress-meta">
+                <span id="progressText">0%</span>
+                <button class="btn btn-outline btn-sm" id="progressCancelBtn" data-i18n="cancel">Cancelar</button>
+            </div>
         </div>
-        <div id="progressText">0%</div>
     </div>
-    
-    <div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
-    
-    <div class="sandbox-notice" id="sandboxNotice" data-i18n="sandboxNotice">
-        ⚠️ Modo Sandbox - Use Exportar/Importar JSON para salvar
-    </div>
-
+    <div class="sandbox-notice" id="sandboxNotice" data-i18n="sandboxNotice">Armazenamento local indisponível — use “Salvar como arquivo”.</div>
     <div class="crop-active-indicator" id="cropIndicator">
-        ✂️ Região de gravação definida: <span id="cropInfo"></span>
-        <button id="cropClearBtn">Remover</button>
+        <span data-i18n="cropActive">Região de gravação:</span> <span id="cropInfo"></span>
+        <button id="cropClearBtn" data-i18n="remove">Remover</button>
     </div>
 
     <script src="js/i18n.js"></script>
+    <script src="js/util.js"></script>
     <script src="js/modal.js"></script>
+    <script src="js/ui.js"></script>
     <script src="js/zip.js"></script>
+    <script src="js/gif.js"></script>
+    <script src="js/storage.js"></script>
+    <script src="js/audio.js"></script>
+    <script src="js/geometry.js"></script>
     <script src="js/timeline-pro.js"></script>
     <script src="js/flow-animator.js"></script>
+    <script src="js/fa-render.js"></script>
+    <script src="js/fa-input.js"></script>
+    <script src="js/fa-media.js"></script>
+    <script src="js/fa-project.js"></script>
+    <script src="js/fa-export.js"></script>
+    <script src="js/inspector.js"></script>
     <script src="js/main.js"></script>
 </body>
 </html>

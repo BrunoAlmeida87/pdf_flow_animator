@@ -1,4 +1,4 @@
-name: Validate HTML
+name: Validate
 
 # Nota (supply-chain): o ideal seria pinar as actions abaixo por SHA completo em vez de
 # tag móvel (@v4). Não foi feito aqui porque o ambiente onde este workflow foi escrito
@@ -31,6 +31,12 @@ jobs:
 
       - name: Run html-validate
         run: npx html-validate main.html index.html
+
+      - name: Run ESLint
+        run: npx eslint .
+
+      - name: Check duplicated FlowAnimator methods
+        run: node scripts/check-duplicates.js
 
       - name: Check JS syntax of extracted modules
         run: |

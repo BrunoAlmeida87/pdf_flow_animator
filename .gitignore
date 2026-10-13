@@ -1,7 +1,10 @@
 # Artefatos gerados localmente ao usar/testar o app
 *.webm
+*.mp4
 frame_*.png
+frames_*.zip
 flow_animation_*.json
+*.flowanim.json
 
 # Sistema operacional
 .DS_Store

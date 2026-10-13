@@ -1,2659 +1,1488 @@
-        // Flow Animator Principal
-        function FlowAnimator() {
-            this.canvas = document.getElementById('canvas');
-            this.ctx = this.canvas.getContext('2d');
-            this.mode = 'draw';
-            this.isDrawing = false;
-            this.currentPath = [];
-            this.actions = [];
-            this.comments = [];
-            this.isPlaying = false;
-            this.animationProgress = 0;
-            this.animationSpeed = 1;
-            this.totalAnimationTime = 10;
-            this.persistPaths = true;
-            
-            // Canvas para desenhos (separado da imagem de fundo)
-            this.drawingCanvas = document.createElement('canvas');
-            this.drawingCtx = this.drawingCanvas.getContext('2d');
-            
-            // PDF/Image
-            this.pdfDoc = null;
-            this.pdfPage = null;
-            this.imageData = null;
-            this.isImage = false;
-            this.pdfImageData = null;
-            this.scale = 1;
-            this.displayScale = 1;
-            
-            // Drawing settings
-            this.flowColor = '#4a90e2';
-            this.lineWidth = 3;
-            this.eraseSize = 20;
-            
-            // Comment settings
-            this.commentTextColor = '#333333';
-            this.commentBgColor = '#ffffff';
-            this.commentBorderColor = '#f39c12';
-            this.commentFontFamily = 'Arial';
-            this.commentFontSize = 16;
-            this.commentOpacity = 0.9;
-            this.selectedComment = null;
-            this.isDraggingComment = false;
-            this.dragOffset = { x: 0, y: 0 };
-            this.isPositioningComment = false;
-            this.commentPreview = document.createElement('div');
-            this.commentPreview.className = 'comment-preview';
+// Flow Animator — núcleo: estado do projeto e das cenas, seleção, undo/redo, reprodução e
+// modo de gravação. Outras responsabilidades estendem o mesmo prototype em arquivos próprios:
+//   fa-render.js  (motor de renderização: tinta, comentários, efeitos, câmera)
+//   fa-input.js   (pointer/teclado, ferramentas, zoom/pan, crop, arrastar-e-soltar)
+//   fa-media.js   (PDF/imagem/áudio, fundos das cenas, assets)
+//   fa-project.js (serialização, validação, autosave em IndexedDB, projetos)
+//   fa-export.js  (vídeo WebCodecs/MediaRecorder, GIF, frames, PNG, legendas)
+// Não redefina um método já existente em outro desses arquivos — a segunda definição
+// sobrescreve a primeira em silêncio (ver CLAUDE.md; scripts/check-duplicates.js checa no CI).
 
-            // Modo Timeline (gravação): a agulha corre em tempo real e cada traço é
-            // gravado sequencialmente, logo após o fim do anterior (ver enterTimelineMode).
-            this.timelineMode = false;
-            this._recordCursor = 0;       // fim do último traço gravado (base do relógio na pausa)
-            this._recordFloor = 0;        // piso do próximo início (offset escolhido ao entrar no modo)
-            this._recordBase = 0;         // posição (s) da agulha no instante _recordClockRef
-            this._recordClockRef = 0;     // Date.now() de referência do relógio de gravação
-            this._recordRAF = null;       // id do requestAnimationFrame do relógio
-            
-            // Straight line mode
-            this.isAltPressed   = false;
-            this.isShiftPressed = false;   // snap 45°
-            this.isDrawingStraightLine = false;
-            this.straightLineStart = null;
-            this.drawStartTime = null;
-            
-            // Recording
-            this.isRecording = false;
-            this.mediaRecorder = null;
-            this.recordingChunks = [];
-            
-            // Error handling
-            this.lastError = null;
-            this.errorCount = 0;
-            
-            // Preview do cursor
-            this.brushPreview = document.getElementById('brushPreview');
-            this.eraserPreview = document.getElementById('eraserPreview');
-            
-            // Região de crop para exportação de vídeo ({ x, y, w, h } em coordenadas do canvas)
-            this.cropRegion    = null;
-            this._cropDragging = false;
-            this._cropStart    = null;
-            this._cropPreview  = null;
+function FlowAnimator() {
+    this.canvas = document.getElementById('canvas');
+    this.ctx = this.canvas.getContext('2d');
+    this.mode = 'draw';
+    this.isDrawing = false;
+    this.currentPath = [];
 
-            // Undo / Redo
-            this._undoStack = [];
-            this._redoStack = [];
-            
-            // Canvas offscreen reutilizável para renderização de animação (evita criar a cada frame)
-            this._offscreenCanvas = document.createElement('canvas');
-            this._offscreenCtx = this._offscreenCanvas.getContext('2d');
+    // Estado da cena ATUAL (as demais cenas guardam o seu em scene.state)
+    this.actions = [];        // draw / erase / laser / spotlight / redact — tempo absoluto (startTime)
+    this.comments = [];       // comentários e números de passo (kind: 'badge')
+    this.cameraMoves = [];    // { id, startTime, duration, rect, easing }
+    this.audioClips = [];     // { id, assetId, startTime, duration, offset, volume, name }
+    this.markers = [];        // { id, time, label }
+    this.totalAnimationTime = 10;
 
-            // Fundo (PDF/imagem) cacheado como canvas: drawImage é muito mais rápido que
-            // putImageData a cada frame (putImageData contorna a GPU).
-            this._bgCanvas = null;
+    this.isPlaying = false;
+    this.animationProgress = 0;
+    this.animationSpeed = 1;
+    this.persistPaths = true;
 
-            // Cache de desenhos já concluídos durante a animação (invalidado a cada mutação de actions)
-            this._persistedDrawsCanvas = document.createElement('canvas');
-            this._persistedDrawsCtx = this._persistedDrawsCanvas.getContext('2d');
-            this._persistedDrawsKey = null;
+    // Canvas só com os traços do usuário (cache da visão de edição). O apagador
+    // (destination-out) age só aqui — nunca no canvas principal — e por isso nunca apaga o fundo.
+    this.drawingCanvas = document.createElement('canvas');
+    this.drawingCtx = this.drawingCanvas.getContext('2d');
 
-            // Initialize
-            this.initializeCanvas();
-            this.bindEvents();
-            
-            // Timeline Professional
-            this.timeline = new TimelinePro(this);
-            
-            // Check localStorage
-            this.checkLocalStorage();
+    // Projeto
+    this.projectId = Util.uid('proj');
+    this.projectName = t('untitledProject');
+    this.scenes = [];
+    this.currentSceneIndex = 0;
+    this.assets = new Map();       // id → { id, kind: 'pdf'|'image'|'audio', mime, name, bytes }
+    this.documentAssetId = null;   // PDF de origem das cenas de página
+    this.pdfDoc = null;
+    this.pdfPage = null;
+    this.isImage = false;
+    this.pdfImageData = null;
+    this.displayScale = 1;
+    this.panX = 0;
+    this.panY = 0;
+
+    // Configurações das ferramentas (persistidas em settings)
+    this.flowColor = '#4a90e2';
+    this.lineWidth = 3;
+    this.penStyle = 'smooth';      // 'smooth' (largura constante) | 'pen' (pressão, perfect-freehand)
+    this.eraseSize = 20;
+    this.highlightColor = '#ffd400';
+    this.highlightWidth = 22;
+    this.shapeFill = false;
+    this.commentTextColor = '#222222';
+    this.commentBgColor = '#ffffff';
+    this.commentBorderColor = '#f39c12';
+    this.commentFontFamily = 'Arial';
+    this.commentFontSize = 24;
+    this.commentOpacity = 0.95;
+    this.commentAnimIn = 'pop';
+    this.commentAnimOut = 'fade';
+    this.commentBalloon = false;
+    this.badgeColor = '#e74c3c';
+    this.laserColor = '#ff3b30';
+    this.spotlightDim = 0.6;
+    this.spotlightShape = 'rect';
+    this.redactMode = 'pixelate';
+
+    // Seleção (ids estáveis — sobrevive a undo/redo, que recria os objetos)
+    this.selection = new Set();
+    this.clipboard = null;
+
+    // Comentário em posicionamento / arrasto
+    this.selectedComment = null;
+    this.isDraggingComment = false;
+    this.dragOffset = { x: 0, y: 0 };
+    this.isPositioningComment = false;
+    this.commentPreview = document.createElement('div');
+    this.commentPreview.className = 'inline-editor';
+    this.commentPreview.style.pointerEvents = 'none';
+    this.commentPreview.style.resize = 'none';
+
+    // Modo de gravação (ver enterTimelineMode e CLAUDE.md)
+    this.timelineMode = false;
+    this._recordContinuous = false; // com narração: relógio contínuo em tempo real
+    this._recordCursor = 0;
+    this._recordFloor = 0;
+    this._recordBase = 0;
+    this._recordClockRef = 0;
+    this._recordRAF = null;
+    this.narrationEnabled = false;
+
+    // Linha reta
+    this.isAltPressed = false;
+    this.isShiftPressed = false;
+    this.isDrawingStraightLine = false;
+    this.straightLineStart = null;
+    this.drawStartTime = null;
+
+    // Exportação
+    this.isRecording = false;
+    this.isExporting = false;
+    this.mediaRecorder = null;
+    this.recordingChunks = [];
+
+    this.lastError = null;
+    this.errorCount = 0;
+
+    this.brushPreview = document.getElementById('brushPreview');
+    this.eraserPreview = document.getElementById('eraserPreview');
+
+    // Região de gravação (crop estático, base da câmera) em coordenadas do canvas
+    this.cropRegion = null;
+    this._cropPreview = null;
+
+    this._undoStack = [];
+    this._redoStack = [];
+
+    // Composição da reprodução (reutilizado por frame) e caches de render
+    this._offscreenCanvas = document.createElement('canvas');
+    this._offscreenCtx = this._offscreenCanvas.getContext('2d');
+    this._bgCanvas = null;
+    this._persistedDrawsCanvas = document.createElement('canvas');
+    this._persistedDrawsCtx = this._persistedDrawsCanvas.getContext('2d');
+    this._persistedDrawsKey = null;
+
+    this.audio = new AudioEngine();
+    this._audioBuffers = new Map(); // assetId → AudioBuffer (decodificado sob demanda)
+    this.cameraPreview = false;
+
+    this._dirty = false;
+
+    this._initScenes();
+    this.initializeCanvas();
+    this.bindEvents();
+    this.timeline = new TimelinePro(this);
+    this.checkLocalStorage();
+    this.updateSceneUI();
+}
+
+// ─── Canvas ────────────────────────────────────────────────────────────────
+
+FlowAnimator.prototype.initializeCanvas = function() {
+    this._syncCanvasSizes(1920, 1080);
+    this.clearCanvas();
+    this.updateCanvasInfo();
+};
+
+// Mantém TODOS os canvases internos com o mesmo tamanho do principal. Sem isso, o
+// _offscreenCanvas de composição ficava travado em 1920×1080 e clipava os traços durante a
+// animação em PDFs maiores (ex.: A4 retrato).
+FlowAnimator.prototype._syncCanvasSizes = function(width, height) {
+    const w = Math.max(1, Math.round(width));
+    const h = Math.max(1, Math.round(height));
+    this.canvas.width = w;
+    this.canvas.height = h;
+    this.drawingCanvas.width = w;
+    this.drawingCanvas.height = h;
+    this._offscreenCanvas.width = w;
+    this._offscreenCanvas.height = h;
+    this._persistedDrawsCanvas.width = w;
+    this._persistedDrawsCanvas.height = h;
+    this._persistedDrawsKey = null;
+    const scene = this._scene();
+    if (scene) { scene.width = w; scene.height = h; }
+    if (this._cropCanvas) this._syncCropCanvas();
+};
+
+// Define o fundo da cena atual a partir de um ImageData (null = quadro branco). Converte em
+// canvas cacheado: drawImage é muito mais rápido que putImageData por frame.
+FlowAnimator.prototype._setBackgroundFromImageData = function(imageData) {
+    this.pdfImageData = imageData;
+    const scene = this._scene();
+    if (!imageData) {
+        this._bgCanvas = null;
+        if (scene) {
+            scene._bgCanvas = null;
+            scene.background = { kind: 'blank', color: (scene.background && scene.background.color) || '#ffffff' };
         }
+        return;
+    }
+    const bg = document.createElement('canvas');
+    bg.width = imageData.width;
+    bg.height = imageData.height;
+    bg.getContext('2d').putImageData(imageData, 0, 0);
+    this._bgCanvas = bg;
+    if (scene) {
+        scene._bgCanvas = bg;
+        if (!scene.background || scene.background.kind === 'blank') scene.background = { kind: 'image', assetId: null };
+    }
+};
 
-        FlowAnimator.prototype.initializeCanvas = function() {
-            this._syncCanvasSizes(1920, 1080);
-            this.ctx.lineCap = 'round';
-            this.ctx.lineJoin = 'round';
-            this.drawingCtx.lineCap = 'round';
-            this.drawingCtx.lineJoin = 'round';
-            this.clearCanvas();
-            this.updateCanvasInfo();
-        };
+FlowAnimator.prototype._drawBackground = function(ctx, view) {
+    const v = view || this._liveView();
+    if (v.bg) {
+        ctx.drawImage(v.bg, 0, 0, v.width, v.height);
+    } else {
+        ctx.fillStyle = v.bgColor || '#ffffff';
+        ctx.fillRect(0, 0, v.width, v.height);
+    }
+};
 
-        // Mantém TODOS os canvases internos com o mesmo tamanho do principal.
-        // Sem isso, o _offscreenCanvas de composição ficava travado em 1920×1080 e
-        // clipava os traços durante a animação em PDFs maiores (ex.: A4 retrato em scale 2).
-        FlowAnimator.prototype._syncCanvasSizes = function(width, height) {
-            this.canvas.width = width;
-            this.canvas.height = height;
-            this.drawingCanvas.width = width;
-            this.drawingCanvas.height = height;
-            this._offscreenCanvas.width = width;
-            this._offscreenCanvas.height = height;
-            this._persistedDrawsCanvas.width = width;
-            this._persistedDrawsCanvas.height = height;
-            this._persistedDrawsKey = null;
-        };
+FlowAnimator.prototype.clearCanvas = function() {
+    this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this._drawBackground(this.ctx);
+};
 
-        // Converte o ImageData do fundo em um canvas cacheado (desenhado via drawImage,
-        // que é ordens de grandeza mais rápido que putImageData por frame).
-        FlowAnimator.prototype._setBackgroundFromImageData = function(imageData) {
-            this.pdfImageData = imageData;
-            if (!imageData) {
-                this._bgCanvas = null;
-                return;
+// ─── Cenas ─────────────────────────────────────────────────────────────────
+
+FlowAnimator.prototype._newScene = function(opts) {
+    const o = opts || {};
+    return {
+        id: o.id || Util.uid('scene'),
+        name: o.name || '',
+        width: o.width || 1920,
+        height: o.height || 1080,
+        background: o.background || { kind: 'blank', color: '#ffffff' },
+        state: o.state || { actions: [], comments: [], cameraMoves: [], audioClips: [], markers: [], totalAnimationTime: 10 },
+        _bgCanvas: null,
+        _bgPromise: null,
+        _undo: [],
+        _redo: [],
+        _thumb: null
+    };
+};
+
+FlowAnimator.prototype._initScenes = function() {
+    this.scenes = [this._newScene()];
+    this.currentSceneIndex = 0;
+};
+
+FlowAnimator.prototype._scene = function() {
+    return (this.scenes && this.scenes[this.currentSceneIndex]) || null;
+};
+
+// Grava o estado de trabalho (campos do FlowAnimator) na cena atual
+FlowAnimator.prototype._captureScene = function() {
+    const scene = this._scene();
+    if (!scene) return;
+    scene.state = this._liveState();
+    scene._undo = this._undoStack;
+    scene._redo = this._redoStack;
+    scene._bgCanvas = this._bgCanvas;
+    scene.cropRegion = this.cropRegion;
+    scene._thumb = null;
+};
+
+// Carrega o estado de uma cena nos campos de trabalho (sem re-render)
+FlowAnimator.prototype._applyScene = function(index) {
+    this.currentSceneIndex = Util.clamp(index, 0, this.scenes.length - 1);
+    const scene = this._scene();
+    const s = scene.state;
+    this.actions = s.actions || [];
+    this.comments = s.comments || [];
+    this.cameraMoves = s.cameraMoves || [];
+    this.audioClips = s.audioClips || [];
+    this.markers = s.markers || [];
+    this.totalAnimationTime = s.totalAnimationTime || 10;
+    const durInput = document.getElementById('totalDuration');
+    if (durInput) durInput.value = this.totalAnimationTime;
+    this._undoStack = scene._undo || (scene._undo = []);
+    this._redoStack = scene._redo || (scene._redo = []);
+    this._bgCanvas = scene._bgCanvas || null;
+    this.selection.clear();
+    this.animationProgress = 0;
+    this._syncCanvasSizes(scene.width, scene.height);
+    this.cropRegion = scene.cropRegion || null;
+    if (this._cropCanvas) this.drawCropOverlay();
+    if (this.updateCropIndicator) this.updateCropIndicator();
+
+    if (!this._bgCanvas && scene.background && scene.background.kind !== 'blank') {
+        this._ensureSceneBackground(scene).then(() => {
+            if (this._scene() === scene) {
+                this._bgCanvas = scene._bgCanvas;
+                if (this.isPlaying) this.renderAnimationFrame();
+                else this.redrawMainCanvas();
+                this._updateEmptyState();
             }
-            this._bgCanvas = document.createElement('canvas');
-            this._bgCanvas.width = imageData.width;
-            this._bgCanvas.height = imageData.height;
-            this._bgCanvas.getContext('2d').putImageData(imageData, 0, 0);
-        };
+        }).catch((e) => this.handleError(t('errBackground'), e));
+    }
+};
 
-        // Desenha o fundo (PDF/imagem ou branco) num contexto qualquer.
-        FlowAnimator.prototype._drawBackground = function(ctx) {
-            if (this._bgCanvas) {
-                ctx.drawImage(this._bgCanvas, 0, 0);
-            } else {
-                ctx.fillStyle = '#ffffff';
-                ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+FlowAnimator.prototype.switchScene = function(index) {
+    if (index === this.currentSceneIndex || index < 0 || index >= this.scenes.length) return;
+    if (this.isPlaying) this.pause();
+    if (this.timelineMode) this.exitTimelineMode();
+    this._captureScene();
+    this._applyScene(index);
+    this._afterSceneChange();
+};
+
+FlowAnimator.prototype._afterSceneChange = function() {
+    this.rebuildDrawingCanvas();
+    this.redrawMainCanvas();
+    this.timeline.refresh();
+    this.updateInfo();
+    this.updateTimeDisplay();
+    this.updateSceneUI();
+    this.fitToScreen();
+    if (this.inspector) this.inspector.refresh();
+    this._updateEmptyState();
+};
+
+FlowAnimator.prototype.addBlankScene = function(after) {
+    this._captureScene();
+    const cur = this._scene();
+    const scene = this._newScene({ width: cur ? cur.width : 1920, height: cur ? cur.height : 1080 });
+    const at = after != null ? after + 1 : this.scenes.length;
+    this.scenes.splice(at, 0, scene);
+    this._applyScene(at);
+    this._afterSceneChange();
+    this.markDirty();
+    return scene;
+};
+
+FlowAnimator.prototype.duplicateScene = function(index) {
+    this._captureScene();
+    const src = this.scenes[index];
+    if (!src) return;
+    const clone = this._newScene({
+        width: src.width,
+        height: src.height,
+        name: src.name ? src.name + ' ' + t('copySuffix') : '',
+        background: JSON.parse(JSON.stringify(src.background)),
+        state: this._snapshotState(src.state, true)
+    });
+    clone._bgCanvas = src._bgCanvas;
+    this.scenes.splice(index + 1, 0, clone);
+    this._applyScene(index + 1);
+    this._afterSceneChange();
+    this.markDirty();
+};
+
+FlowAnimator.prototype.deleteScene = function(index) {
+    if (this.scenes.length <= 1) {
+        this.showTooltip(t('cantDeleteLastScene'));
+        return;
+    }
+    this._captureScene();
+    const removed = this.scenes.splice(index, 1)[0];
+    this._applyScene(Math.min(index, this.scenes.length - 1));
+    this._afterSceneChange();
+    this.markDirty();
+    Toast.show(t('sceneDeleted'), {
+        action: {
+            label: t('undo'),
+            onClick: () => {
+                this._captureScene();
+                this.scenes.splice(index, 0, removed);
+                this._applyScene(index);
+                this._afterSceneChange();
+                this.markDirty();
             }
+        }
+    });
+};
+
+FlowAnimator.prototype.moveScene = function(index, dir) {
+    const to = index + dir;
+    if (to < 0 || to >= this.scenes.length) return;
+    this._captureScene();
+    const current = this._scene();
+    const [s] = this.scenes.splice(index, 1);
+    this.scenes.splice(to, 0, s);
+    this.currentSceneIndex = this.scenes.indexOf(current);
+    this.updateSceneUI();
+    this.markDirty();
+};
+
+FlowAnimator.prototype.renameScene = function(index, name) {
+    const s = this.scenes[index];
+    if (!s) return;
+    s.name = String(name || '').slice(0, 80);
+    this.updateSceneUI();
+    this.markDirty();
+};
+
+FlowAnimator.prototype._sceneDisplayName = function(scene, index) {
+    if (scene.name) return scene.name;
+    if (scene.background && scene.background.kind === 'pdf') return t('pageN', { n: scene.background.page });
+    return t('sceneN', { n: index + 1 });
+};
+
+FlowAnimator.prototype.updateSceneUI = function() {
+    const label = document.getElementById('sceneLabel');
+    if (!label) return;
+    const scene = this._scene();
+    const name = scene ? this._sceneDisplayName(scene, this.currentSceneIndex) : '';
+    label.textContent = `${this.currentSceneIndex + 1}/${this.scenes.length} · ${name}`;
+    document.getElementById('scenePrevBtn').disabled = this.currentSceneIndex <= 0;
+    document.getElementById('sceneNextBtn').disabled = this.currentSceneIndex >= this.scenes.length - 1;
+    const nameInput = document.getElementById('sceneNameInput');
+    if (nameInput && document.activeElement !== nameInput) {
+        nameInput.value = scene ? (scene.name || '') : '';
+        nameInput.placeholder = scene ? this._sceneDisplayName(scene, this.currentSceneIndex) : '';
+    }
+    const bgField = document.getElementById('sceneBgField');
+    if (bgField && scene) {
+        bgField.hidden = scene.background.kind !== 'blank';
+        document.getElementById('sceneBgColor').value = scene.background.color || '#ffffff';
+    }
+};
+
+// ─── IDs e lookup ──────────────────────────────────────────────────────────
+
+// Garante um id estável em cada item (objetos criados por código antigo/testes podem vir sem)
+FlowAnimator.prototype._ensureIds = function() {
+    for (const a of this.actions) if (!a.id) a.id = Util.uid('a');
+    for (const c of this.comments) if (!c.id) c.id = Util.uid('c');
+    for (const m of this.cameraMoves) if (!m.id) m.id = Util.uid('cam');
+    for (const c of this.audioClips) if (!c.id) c.id = Util.uid('au');
+    for (const m of this.markers) if (!m.id) m.id = Util.uid('mk');
+};
+
+// Tipo de track de um item ('draw' inclui formas e marca-texto)
+FlowAnimator.prototype._trackTypeOf = function(kind, obj) {
+    if (kind === 'comment') return 'comment';
+    if (kind === 'camera') return 'camera';
+    if (kind === 'audio') return 'audio';
+    if (kind === 'marker') return 'marker';
+    if (obj.type === 'erase') return 'erase';
+    if (obj.type === 'laser') return 'laser';
+    if (obj.type === 'spotlight' || obj.type === 'redact') return 'effect';
+    return 'draw';
+};
+
+FlowAnimator.prototype._allItems = function() {
+    this._ensureIds();
+    const out = [];
+    for (const a of this.actions) out.push({ kind: 'action', obj: a });
+    for (const c of this.comments) out.push({ kind: 'comment', obj: c });
+    for (const m of this.cameraMoves) out.push({ kind: 'camera', obj: m });
+    for (const c of this.audioClips) out.push({ kind: 'audio', obj: c });
+    for (const m of this.markers) out.push({ kind: 'marker', obj: m });
+    return out;
+};
+
+FlowAnimator.prototype.findItemById = function(id) {
+    for (const it of this._allItems()) if (it.obj.id === id) return it;
+    return null;
+};
+
+// Tempo de início / duração genéricos de um item
+FlowAnimator.itemStart = function(kind, obj) {
+    if (kind === 'comment' || kind === 'marker') return obj.time || 0;
+    return obj.startTime || 0;
+};
+FlowAnimator.itemDuration = function(kind, obj) {
+    if (kind === 'marker') return 0;
+    if (kind === 'comment') return obj.duration || 3;
+    return obj.duration || 2;
+};
+FlowAnimator.setItemStart = function(kind, obj, v) {
+    if (kind === 'comment' || kind === 'marker') obj.time = Math.max(0, v);
+    else obj.startTime = Math.max(0, v);
+};
+
+// ─── Seleção ───────────────────────────────────────────────────────────────
+
+FlowAnimator.prototype.setSelection = function(ids, additive) {
+    if (!additive) this.selection.clear();
+    for (const id of ids) if (id) this.selection.add(id);
+    this._onSelectionChanged();
+};
+
+FlowAnimator.prototype.toggleSelection = function(id) {
+    if (this.selection.has(id)) this.selection.delete(id);
+    else this.selection.add(id);
+    this._onSelectionChanged();
+};
+
+FlowAnimator.prototype.clearSelection = function() {
+    if (!this.selection.size) return;
+    this.selection.clear();
+    this._onSelectionChanged();
+};
+
+FlowAnimator.prototype.isSelected = function(id) {
+    return this.selection.has(id);
+};
+
+FlowAnimator.prototype.getSelectedItems = function() {
+    if (!this.selection.size) return [];
+    return this._allItems().filter((it) => this.selection.has(it.obj.id));
+};
+
+FlowAnimator.prototype._onSelectionChanged = function() {
+    // Remove ids que não existem mais (ex.: após deleção ou undo)
+    if (this.selection.size) {
+        const existing = new Set(this._allItems().map((it) => it.obj.id));
+        for (const id of Array.from(this.selection)) if (!existing.has(id)) this.selection.delete(id);
+    }
+    if (!this.isPlaying) this.redrawMainCanvas();
+    if (this.timeline) this.timeline.updateSelectionClasses();
+    if (this.inspector) this.inspector.refresh();
+};
+
+FlowAnimator.prototype.selectAll = function() {
+    this.setSelection(this._allItems().filter((it) => it.kind !== 'marker').map((it) => it.obj.id));
+};
+
+FlowAnimator.prototype._isItemLocked = function(it) {
+    return !!(this.timeline && this.timeline.isTrackLocked(this._trackTypeOf(it.kind, it.obj)));
+};
+
+FlowAnimator.prototype._removeItems = function(items) {
+    const ids = new Set(items.map((it) => it.obj.id));
+    this.actions = this.actions.filter((a) => !ids.has(a.id));
+    this.comments = this.comments.filter((c) => !ids.has(c.id));
+    this.cameraMoves = this.cameraMoves.filter((m) => !ids.has(m.id));
+    this.audioClips = this.audioClips.filter((c) => !ids.has(c.id));
+    this.markers = this.markers.filter((m) => !ids.has(m.id));
+    for (const id of ids) this.selection.delete(id);
+};
+
+// Exclui itens com aviso "Desfazer" (em vez de pedir confirmação a cada exclusão)
+FlowAnimator.prototype.deleteItems = function(items) {
+    const deletable = items.filter((it) => !this._isItemLocked(it));
+    if (!deletable.length) {
+        if (items.length) this.showTooltip(t('trackLockedDelete'));
+        return false;
+    }
+    this.saveUndoState();
+    this._removeItems(deletable);
+    this._afterContentChange();
+    Toast.show(deletable.length === 1 ? t('itemDeleted') : t('itemsDeleted', { n: deletable.length }), {
+        action: { label: t('undo'), onClick: () => this.undo() }
+    });
+    return true;
+};
+
+FlowAnimator.prototype.deleteSelection = function() {
+    return this.deleteItems(this.getSelectedItems());
+};
+
+FlowAnimator.prototype._cloneForPaste = function(it, dx, dy, dt) {
+    const o = this._cloneItem(it.obj);
+    const prefix = { comment: 'c', camera: 'cam', audio: 'au', marker: 'mk' }[it.kind] || 'a';
+    o.id = Util.uid(prefix);
+    if (it.kind === 'action') {
+        if (o.points) o.points = Geometry.translatePoints(o.points, dx, dy);
+        if (o.rect) o.rect = { x: o.rect.x + dx, y: o.rect.y + dy, w: o.rect.w, h: o.rect.h };
+    } else if (it.kind === 'comment') {
+        o.x += dx;
+        o.y += dy;
+        if (o.pointer) o.pointer = { x: o.pointer.x + dx, y: o.pointer.y + dy };
+    } else if (it.kind === 'camera' && o.rect) {
+        o.rect = { x: o.rect.x + dx, y: o.rect.y + dy, w: o.rect.w, h: o.rect.h };
+    }
+    FlowAnimator.setItemStart(it.kind, o, FlowAnimator.itemStart(it.kind, it.obj) + dt);
+    return o;
+};
+
+FlowAnimator.prototype._insertItems = function(items) {
+    const ids = [];
+    for (const it of items) {
+        if (it.kind === 'action') this.actions.push(it.obj);
+        else if (it.kind === 'comment') this.comments.push(it.obj);
+        else if (it.kind === 'camera') this.cameraMoves.push(it.obj);
+        else if (it.kind === 'audio') this.audioClips.push(it.obj);
+        else if (it.kind === 'marker') this.markers.push(it.obj);
+        ids.push(it.obj.id);
+    }
+    return ids;
+};
+
+FlowAnimator.prototype.duplicateSelection = function() {
+    const items = this.getSelectedItems().filter((it) => it.kind !== 'audio' && it.kind !== 'marker');
+    if (!items.length) { this.showTooltip(t('nothingSelected')); return; }
+    this.saveUndoState();
+    const clones = items.map((it) => ({ kind: it.kind, obj: this._cloneForPaste(it, 24, 24, 0) }));
+    const ids = this._insertItems(clones);
+    this._afterContentChange();
+    this.setSelection(ids);
+    this.showTooltip(t('duplicated', { n: ids.length }));
+};
+
+FlowAnimator.prototype.copySelection = function() {
+    const items = this.getSelectedItems().filter((it) => it.kind !== 'marker');
+    if (!items.length) return false;
+    const minStart = Math.min(...items.map((it) => FlowAnimator.itemStart(it.kind, it.obj)));
+    this.clipboard = { items: items.map((it) => ({ kind: it.kind, obj: this._cloneItem(it.obj) })), minStart };
+    this.showTooltip(t('copied', { n: items.length }));
+    return true;
+};
+
+// Cola deslocado e reposicionado na agulha (mantendo os tempos relativos entre os itens)
+FlowAnimator.prototype.pasteClipboard = function() {
+    if (!this.clipboard || !this.clipboard.items.length) return false;
+    this.saveUndoState();
+    const dt = this.currentTime() - this.clipboard.minStart;
+    const clones = this.clipboard.items.map((it) => ({ kind: it.kind, obj: this._cloneForPaste(it, 24, 24, dt) }));
+    const ids = this._insertItems(clones);
+    for (const c of clones) this._ensureDurationCovers(FlowAnimator.itemStart(c.kind, c.obj) + FlowAnimator.itemDuration(c.kind, c.obj));
+    this._afterContentChange();
+    this.setSelection(ids);
+    return true;
+};
+
+// Desloca itens no espaço (pontos são REATRIBUÍDOS, nunca mutados in-place — ver saveUndoState)
+FlowAnimator.prototype.moveItems = function(items, dx, dy) {
+    for (const it of items) {
+        const o = it.obj;
+        if (it.kind === 'action') {
+            if (o.points) o.points = Geometry.translatePoints(o.points, dx, dy);
+            if (o.rect) o.rect = { x: o.rect.x + dx, y: o.rect.y + dy, w: o.rect.w, h: o.rect.h };
+        } else if (it.kind === 'comment') {
+            o.x += dx;
+            o.y += dy;
+            if (o.pointer) o.pointer = { x: o.pointer.x + dx, y: o.pointer.y + dy };
+        } else if (it.kind === 'camera' && o.rect) {
+            o.rect = { x: o.rect.x + dx, y: o.rect.y + dy, w: o.rect.w, h: o.rect.h };
+        }
+    }
+};
+
+// Escala um item a partir de `origin` (alça de canto da seleção)
+FlowAnimator.prototype.scaleItem = function(it, origin, sx, sy) {
+    const o = it.obj;
+    const scaleRect = (r) => Geometry.rectFromPoints(
+        { x: origin.x + (r.x - origin.x) * sx, y: origin.y + (r.y - origin.y) * sy },
+        { x: origin.x + (r.x + r.w - origin.x) * sx, y: origin.y + (r.y + r.h - origin.y) * sy });
+    if (it.kind === 'action') {
+        if (o.points) o.points = Geometry.scalePoints(o.points, origin, sx, sy);
+        if (o.rect) o.rect = scaleRect(o.rect);
+    } else if (it.kind === 'comment') {
+        const s = Math.max(0.1, Math.sqrt(Math.abs(sx * sy)));
+        o.fontSize = Util.clamp(Math.round((o.fontSize || this.commentFontSize) * s), 8, 240);
+        o.x = origin.x + (o.x - origin.x) * sx;
+        o.y = origin.y + (o.y - origin.y) * sy;
+    } else if (it.kind === 'camera' && o.rect) {
+        o.rect = scaleRect(o.rect);
+    }
+};
+
+// Caixa ocupada no canvas (null para itens sem posição, ex.: áudio)
+FlowAnimator.prototype.itemBounds = function(it) {
+    const o = it.obj;
+    if (it.kind === 'comment') {
+        const b = this._getCommentBox(o);
+        return { x: b.x, y: b.y, w: b.w, h: b.h };
+    }
+    if (it.kind === 'camera') return o.rect ? Object.assign({}, o.rect) : null;
+    if (it.kind !== 'action') return null;
+    if (o.rect) return Object.assign({}, o.rect);
+    if (!o.points || !o.points.length) return null;
+    const b = Geometry.bbox(o.points);
+    const pad = (o.type === 'erase' ? (o.size || 20) : (o.width || 3)) / 2;
+    return { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
+};
+
+// ─── Undo / Redo ───────────────────────────────────────────────────────────
+// Snapshots copiam cada item (1 nível) mas compartilham os arrays `points` por referência —
+// seguro porque `points` nunca é mutado in-place, só reatribuído (moveItems, scaleItem,
+// optimizePerformance). Objetos aninhados (rect, pointer) também são sempre reatribuídos.
+
+FlowAnimator.prototype._cloneItem = function(o) {
+    const c = Object.assign({}, o);
+    if (o.rect) c.rect = Object.assign({}, o.rect);
+    if (o.pointer) c.pointer = Object.assign({}, o.pointer);
+    delete c._layout;
+    delete c._layoutKey;
+    return c;
+};
+
+FlowAnimator.prototype._snapshotState = function(state, newIds) {
+    const clone = (arr, prefix) => (arr || []).map((o) => {
+        const c = this._cloneItem(o);
+        if (newIds) c.id = Util.uid(prefix);
+        return c;
+    });
+    return {
+        actions: clone(state.actions, 'a'),
+        comments: clone(state.comments, 'c'),
+        cameraMoves: clone(state.cameraMoves, 'cam'),
+        audioClips: clone(state.audioClips, 'au'),
+        markers: clone(state.markers, 'mk'),
+        totalAnimationTime: state.totalAnimationTime
+    };
+};
+
+FlowAnimator.prototype._liveState = function() {
+    return {
+        actions: this.actions,
+        comments: this.comments,
+        cameraMoves: this.cameraMoves,
+        audioClips: this.audioClips,
+        markers: this.markers,
+        totalAnimationTime: this.totalAnimationTime
+    };
+};
+
+FlowAnimator.prototype._restoreSnapshot = function(snap) {
+    this.actions = snap.actions;
+    this.comments = snap.comments;
+    this.cameraMoves = snap.cameraMoves;
+    this.audioClips = snap.audioClips;
+    this.markers = snap.markers;
+    if (snap.totalAnimationTime) this.setTotalDuration(snap.totalAnimationTime, true);
+};
+
+FlowAnimator.UNDO_LIMIT = 100;
+
+FlowAnimator.prototype.saveUndoState = function() {
+    this._ensureIds();
+    this._undoStack.push(this._snapshotState(this._liveState()));
+    if (this._undoStack.length > FlowAnimator.UNDO_LIMIT) this._undoStack.shift();
+    this._redoStack.length = 0; // nova ação invalida o redo
+    this.markDirty();
+};
+
+FlowAnimator.prototype.undo = function() {
+    if (this._undoStack.length === 0) { this.showTooltip(t('nothingToUndo')); return; }
+    this._redoStack.push(this._snapshotState(this._liveState()));
+    this._restoreSnapshot(this._undoStack.pop());
+    this._afterContentChange();
+    this.showTooltip(t('undone'));
+};
+
+FlowAnimator.prototype.redo = function() {
+    if (this._redoStack.length === 0) { this.showTooltip(t('nothingToRedo')); return; }
+    this._undoStack.push(this._snapshotState(this._liveState()));
+    this._restoreSnapshot(this._redoStack.pop());
+    this._afterContentChange();
+    this.showTooltip(t('redone'));
+};
+
+// Chokepoint após qualquer mutação de conteúdo da cena
+FlowAnimator.prototype._afterContentChange = function() {
+    this.rebuildDrawingCanvas();
+    if (this.isPlaying) this.renderAnimationFrame();
+    else this.redrawMainCanvas();
+    this.timeline.refresh();
+    this.updateInfo();
+    const scene = this._scene();
+    if (scene) scene._thumb = null;
+    this._onSelectionChanged();
+    this._updateEmptyState();
+    this.markDirty();
+};
+
+// ─── Tempo / informações ───────────────────────────────────────────────────
+
+FlowAnimator.prototype.currentTime = function() {
+    return this.animationProgress * this.totalAnimationTime;
+};
+
+FlowAnimator.prototype.formatTime = function(seconds) {
+    return Util.formatTime(seconds);
+};
+
+FlowAnimator.prototype.updateTimeDisplay = function() {
+    const el = document.getElementById('timeDisplay');
+    if (el) el.textContent = `${Util.formatTimePrecise(this.currentTime())} / ${Util.formatTimePrecise(this.totalAnimationTime)}`;
+    this.updateCurrentTimeDisplay();
+};
+
+// O campo "Aparece em" do comentário acompanha a agulha até o usuário digitar outro valor
+FlowAnimator.prototype.updateCurrentTimeDisplay = function() {
+    const field = document.getElementById('commentTime');
+    if (field && !this._commentTimeManual && document.activeElement !== field) {
+        field.value = String(Math.round(this.currentTime() * 10) / 10);
+    }
+};
+
+FlowAnimator.prototype.updateInfo = function() {
+    let drawCount = 0, eraseCount = 0;
+    for (const a of this.actions) {
+        if (a.type === 'draw') drawCount++;
+        else if (a.type === 'erase') eraseCount++;
+    }
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('drawCount', drawCount);
+    set('eraseCount', eraseCount);
+    set('commentCount', this.comments.length);
+    set('realDuration', Util.num(this._lastContentEnd(), 1) + 's');
+};
+
+// ─── Reprodução ────────────────────────────────────────────────────────────
+// play() retorna uma Promise que resolve quando a reprodução para (fim natural, pause ou
+// reset). Novos jeitos de parar a reprodução precisam chamar _resolvePlaybackEnd().
+
+FlowAnimator.prototype._hasContent = function() {
+    return this.actions.length > 0 || this.comments.length > 0 || this.cameraMoves.length > 0 || this.audioClips.length > 0;
+};
+
+FlowAnimator.prototype.play = function() {
+    if (!this._hasContent()) {
+        this.showTooltip(t('addActionsFirst'));
+        return Promise.resolve();
+    }
+
+    // Já tocando: reutiliza a Promise em andamento — sobrescrever _onPlaybackEnd deixaria a
+    // Promise anterior (que o export pode estar aguardando) pendurada para sempre.
+    if (this.isPlaying && this._playbackPromise) {
+        return this._playbackPromise;
+    }
+    if (this.animationProgress >= 1) this.animationProgress = 0;
+
+    this.isPlaying = true;
+    this.animationStartTime = performance.now() - (this.animationProgress * this.totalAnimationTime * 1000 / this.animationSpeed);
+    this._startAudio();
+    this._updatePlayButton();
+    this._playbackPromise = new Promise((resolve) => {
+        this._onPlaybackEnd = resolve;
+        this.animate();
+    });
+    return this._playbackPromise;
+};
+
+FlowAnimator.prototype._resolvePlaybackEnd = function() {
+    if (this._onPlaybackEnd) {
+        const resolve = this._onPlaybackEnd;
+        this._onPlaybackEnd = null;
+        this._playbackPromise = null;
+        resolve();
+    }
+};
+
+FlowAnimator.prototype.pause = function() {
+    this.isPlaying = false;
+    this.audio.stop();
+    this._updatePlayButton();
+    this._resolvePlaybackEnd();
+    this.redrawOverlaysAtPlayhead();
+};
+
+FlowAnimator.prototype.reset = function() {
+    this.isPlaying = false;
+    this.audio.stop();
+    this.animationProgress = 0;
+    this.renderAnimationFrame();
+    this.timeline.updatePlayhead();
+    this.updateTimeDisplay();
+    this._updatePlayButton();
+    this._resolvePlaybackEnd();
+};
+
+FlowAnimator.prototype.togglePlay = function() {
+    if (this.isPlaying) this.pause();
+    else this.play();
+};
+
+FlowAnimator.prototype._updatePlayButton = function() {
+    const btn = document.getElementById('timelinePlayBtn');
+    if (!btn) return;
+    const use = btn.querySelector('use');
+    if (use) use.setAttribute('href', this.isPlaying ? '#i-pause' : '#i-play');
+};
+
+FlowAnimator.prototype._startAudio = function() {
+    if (!this.audioClips.length || !this._isTypeVisible('audio') || this._narration) return;
+    this.audio.play(this.audioClips, this.currentTime(), this.animationSpeed, (id) => this._audioBuffers.get(id) || null);
+};
+
+FlowAnimator.prototype.animate = function() {
+    if (!this.isPlaying) return;
+
+    const now = performance.now();
+    const elapsed = (now - this.animationStartTime) * this.animationSpeed / 1000;
+    this.animationProgress = elapsed / this.totalAnimationTime;
+
+    if (this.animationProgress >= 1) {
+        this.animationProgress = 1;
+        this.isPlaying = false;
+        this.audio.stop();
+        this._updatePlayButton();
+    }
+
+    this.renderAnimationFrame();
+    this.timeline.updatePlayhead();
+    this.updateTimeDisplay();
+
+    if (this.isPlaying) {
+        requestAnimationFrame(() => this.animate());
+    } else {
+        this._resolvePlaybackEnd();
+    }
+};
+
+// Posiciona a agulha (funciona também durante a reprodução, reiniciando o áudio)
+FlowAnimator.prototype.seekTo = function(seconds, options) {
+    const s = Util.clamp(seconds, 0, this.totalAnimationTime);
+    this.animationProgress = this.totalAnimationTime > 0 ? s / this.totalAnimationTime : 0;
+    if (this.isPlaying) {
+        this.animationStartTime = performance.now() - (s * 1000 / this.animationSpeed);
+        this._startAudio();
+    }
+    this.renderAnimationFrame();
+    this.timeline.updatePlayhead(options && options.noAutoScroll);
+    this.updateTimeDisplay();
+};
+
+FlowAnimator.prototype.stepTime = function(delta) {
+    this.seekTo(this.currentTime() + delta);
+};
+
+// Muda a velocidade preservando o progresso atual — sem recalcular animationStartTime, mudar
+// a velocidade durante o playback reescalaria todo o tempo já decorrido e o playhead saltaria.
+FlowAnimator.prototype.setSpeed = function(speed) {
+    const v = parseFloat(speed);
+    if (!isFinite(v) || v <= 0) return;
+    if (this.isPlaying) {
+        this.animationStartTime = performance.now() - (this.animationProgress * this.totalAnimationTime * 1000 / v);
+    }
+    this.animationSpeed = v;
+    if (this.isPlaying) this._startAudio();
+};
+
+// ─── Modo de gravação ──────────────────────────────────────────────────────
+
+// Tempo (s) em que o último conteúdo termina. Ponto de partida do cursor de gravação.
+FlowAnimator.prototype._lastContentEnd = function() {
+    let end = 0;
+    for (const a of this.actions) end = Math.max(end, (a.startTime || 0) + (a.duration || 0));
+    for (const c of this.comments) end = Math.max(end, (c.time || 0) + (c.duration || 0));
+    for (const m of this.cameraMoves) end = Math.max(end, (m.startTime || 0) + (m.duration || 0));
+    for (const c of this.audioClips) end = Math.max(end, (c.startTime || 0) + (c.duration || 0));
+    return end;
+};
+
+// Onde o próximo traço gravado deve começar: logo após o conteúdo existente, mas nunca antes
+// do piso escolhido ao entrar no modo (_recordFloor). DERIVADO do conteúdo real em vez de um
+// contador que só cresce — undo/redo, deleção e "limpar" reposicionam o início sozinhos.
+FlowAnimator.prototype._nextRecordStart = function() {
+    return Math.max(this._lastContentEnd(), this._recordFloor || 0);
+};
+
+// Posiciona a agulha sem re-renderizar o canvas (só playhead + displays de tempo)
+FlowAnimator.prototype._seekNeedle = function(seconds) {
+    const clamped = Math.max(0, Math.min(seconds, this.totalAnimationTime));
+    this.animationProgress = this.totalAnimationTime > 0 ? clamped / this.totalAnimationTime : 0;
+    this.timeline.updatePlayhead();
+    this.updateTimeDisplay();
+};
+
+// Relógio de gravação (rAF): a agulha corre em tempo real enquanto um traço está sendo
+// desenhado (modo sequencial) ou continuamente (modo com narração). Só move o playhead —
+// nunca re-renderiza o canvas —, então convive com o desenho ao vivo.
+FlowAnimator.prototype._startRecordClock = function(baseSeconds) {
+    this._recordBase = baseSeconds;
+    this._recordClockRef = performance.now();
+    if (this._recordRAF) cancelAnimationFrame(this._recordRAF);
+
+    const tick = () => {
+        this._recordRAF = null;
+        if (!this.timelineMode || this.isPlaying) return;
+        // Sequencial: para quando ocioso (fora de um traço/gesto de criação)
+        if (!this._recordContinuous && !this.isDrawing && !this._gestureActive) return;
+        const now = this._recordNow();
+        if (this._recordContinuous && now > this.totalAnimationTime - 0.5) this.setTotalDuration(Math.ceil(now + 5), true);
+        this._seekNeedle(now);
+        this._updateRecPill(now);
+        this._recordRAF = requestAnimationFrame(tick);
+    };
+    this._recordRAF = requestAnimationFrame(tick);
+};
+
+FlowAnimator.prototype._recordNow = function() {
+    return this._recordBase + (performance.now() - this._recordClockRef) / 1000;
+};
+
+FlowAnimator.prototype._stopRecordClock = function() {
+    if (this._recordRAF) cancelAnimationFrame(this._recordRAF);
+    this._recordRAF = null;
+};
+
+// Em modo gravação sequencial e ocioso, a agulha marca onde o PRÓXIMO traço vai começar.
+// Chamado de rebuildDrawingCanvas() (chokepoint de toda mutação).
+FlowAnimator.prototype._syncRecordNeedle = function() {
+    if (this.timelineMode && !this._recordContinuous && !this.isDrawing && !this._gestureActive && !this.isPlaying) {
+        this._recordCursor = this._nextRecordStart();
+        this._seekNeedle(this._recordCursor);
+    }
+};
+
+// Início/duração de um item recém-criado, conforme o modo:
+//  - gravação sequencial: logo após o conteúdo, com o tempo real de desenho;
+//  - gravação contínua (narração): no instante real em que o gesto começou;
+//  - normal: na agulha, com a duração-padrão do tipo.
+FlowAnimator.prototype._timingForNew = function(realSeconds, kind) {
+    if (this.timelineMode && this._recordContinuous) {
+        const start = this._gestureRecordStart != null ? this._gestureRecordStart : this._recordNow();
+        return { startTime: start, duration: Math.max(0.3, realSeconds) };
+    }
+    if (this.timelineMode) {
+        return { startTime: this._nextRecordStart(), duration: Math.max(0.5, Math.min(realSeconds, 15)) };
+    }
+    const defaults = {
+        stroke: Util.clamp(realSeconds * 0.5, 0.5, 10),
+        laser: Util.clamp(realSeconds, 0.5, 30),
+        shape: 1,
+        spotlight: 3,
+        camera: 1.5
+    };
+    return { startTime: this.currentTime(), duration: defaults[kind] != null ? defaults[kind] : 1 };
+};
+
+// Após inserir um item gravado: avança o cursor, estende a duração e reancora a agulha
+FlowAnimator.prototype._commitTiming = function(start, duration) {
+    const end = start + duration;
+    this._ensureDurationCovers(end);
+    if (this.timelineMode && !this._recordContinuous) {
+        this._recordCursor = end;
+        this._stopRecordClock();
+        this._seekNeedle(this._recordCursor);
+    }
+};
+
+// Modo Timeline = modo de GRAVAÇÃO. Sequencial (padrão): cada traço entra logo após o
+// anterior — pausas para pensar não viram espaço vazio. Contínuo (com narração): relógio em
+// tempo real, microfone gravando, e cada traço entra no instante em que foi feito.
+// Novos jeitos de sair do modo precisam chamar exitTimelineMode() (para o rAF do relógio).
+FlowAnimator.prototype.enterTimelineMode = function(options) {
+    const opts = options || {};
+    if (this.isPlaying) this.pause();
+    this.timelineMode = true;
+    this._recordContinuous = !!opts.continuous;
+    document.body.classList.add('timeline-mode');
+
+    // Piso = SÓ o offset do playhead escolhido. O fim do conteúdo entra dinamicamente via
+    // _lastContentEnd() dentro de _nextRecordStart() (limpar/deletar não deixa piso obsoleto).
+    this._recordFloor = this.animationProgress * this.totalAnimationTime;
+    this._recordCursor = this._nextRecordStart();
+    this._seekNeedle(this._recordCursor);
+
+    if (this._recordContinuous) {
+        this._recordSessionStart = this._recordCursor;
+        this._startRecordClock(this._recordCursor);
+    }
+    this._updateRecordUI();
+};
+
+FlowAnimator.prototype.exitTimelineMode = function() {
+    const wasContinuous = this._recordContinuous;
+    const endTime = wasContinuous ? this._recordNow() : null;
+    this.timelineMode = false;
+    this._recordContinuous = false;
+    this._stopRecordClock();
+    document.body.classList.remove('timeline-mode');
+    if (wasContinuous) this._ensureDurationCovers(endTime);
+    this._updateRecordUI();
+    if (this._micSession) this._finishMicSession();
+};
+
+// Botão "● Gravar" (com o microfone ligado, faz contagem 3-2-1 e grava a narração junto)
+FlowAnimator.prototype.toggleRecording = async function() {
+    if (this.timelineMode) {
+        this.exitTimelineMode();
+        return;
+    }
+    if (this.narrationEnabled) {
+        let session;
+        try {
+            session = await this.audio.startMicRecording();
+        } catch (e) {
+            this.handleError(t('micError'), e);
+            Toast.show(t('micError') + ': ' + (e.message || e), { kind: 'error' });
+            return;
+        }
+        await this._countdown();
+        this._micSession = session;
+        this.enterTimelineMode({ continuous: true });
+        session.timelineStart = this._recordSessionStart;
+    } else {
+        this.enterTimelineMode();
+        Toast.show(t('recordStarted'));
+    }
+};
+
+FlowAnimator.prototype._countdown = function() {
+    return new Promise((resolve) => {
+        const el = document.createElement('div');
+        el.className = 'rec-pill';
+        el.setAttribute('role', 'status');
+        el.style.cssText = 'position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);font-size:40px;height:auto;padding:16px 28px;border-radius:40px;z-index:9000';
+        document.body.appendChild(el);
+        let n = 3;
+        const step = () => {
+            if (n === 0) { el.remove(); resolve(); return; }
+            el.textContent = String(n--);
+            setTimeout(step, 700);
         };
+        step();
+    });
+};
 
-        FlowAnimator.prototype.clearCanvas = function() {
-            // Limpar apenas o canvas de desenho, preservando o fundo
-            this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
-            
-            // Redesenhar apenas se não há imagem de fundo
-            if (!this.pdfImageData) {
-                this.ctx.fillStyle = '#ffffff';
-                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-            }
-        };
+FlowAnimator.prototype._finishMicSession = async function() {
+    const session = this._micSession;
+    this._micSession = null;
+    if (!session) return;
+    const result = await session.stop();
+    await this._addRecordedAudio(result, session.timelineStart || 0, t('narration'));
+};
 
-        FlowAnimator.prototype.bindEvents = function() {
-            const self = this;
-            
-            // File input
-            document.getElementById('pdfInput').addEventListener('change', (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
-                
-                if (file.type === 'application/pdf') {
-                    self.loadPDF(file);
-                } else if (file.type.startsWith('image/')) {
-                    self.loadImage(file);
-                } else {
-                    self.showTooltip('Formato não suportado. Use PDF ou imagem.');
-                }
-            });
-            
-            // Mode buttons
-            document.querySelectorAll('.mode-btn').forEach(btn => {
-                btn.addEventListener('click', function() {
-                    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-                    this.classList.add('active');
-                    self.mode = this.dataset.mode;
-                    self.updateCursor();
-                    self.updateStraightLineIndicator();
-                });
-            });
-            
-            // Playback controls
-            document.getElementById('playBtn').addEventListener('click', () => self.play());
-            document.getElementById('pauseBtn').addEventListener('click', () => self.pause());
-            document.getElementById('resetBtn').addEventListener('click', () => self.reset());
-            document.getElementById('clearBtn').addEventListener('click', () => self.clear());
-            document.getElementById('undoBtn').addEventListener('click', () => self.undo());
-            document.getElementById('redoBtn').addEventListener('click', () => self.redo());
-            
-            // Save/Load
-            document.getElementById('saveBtn').addEventListener('click', () => self.saveToLocalStorage());
-            document.getElementById('loadBtn').addEventListener('click', () => self.loadFromLocalStorage());
-            document.getElementById('exportBtn').addEventListener('click', () => self.exportJSON());
-            document.getElementById('importBtn').addEventListener('click', () => {
-                document.getElementById('jsonInput').click();
-            });
-            
-            document.getElementById('jsonInput').addEventListener('change', (e) => {
-                if (e.target.files[0]) {
-                    self.importJSON(e.target.files[0]);
-                }
-            });
-            
-            // Video export
-            document.getElementById('exportVideoBtn').addEventListener('click', function() {
-                try {
-                    self.exportVideoHD();
-                } catch (error) {
-                    console.error('Erro ao exportar vídeo:', error);
-                    self.showTooltip('Erro ao exportar vídeo. Tente exportar frames.');
-                    document.getElementById('exportFramesBtn').style.display = 'inline-block';
-                }
-            });
-            
-            // Frames export (alternativa)
-            document.getElementById('exportFramesBtn').addEventListener('click', function() {
-                self.exportAsFrames();
-            });
-            
-            // Canvas events
-            this.canvas.addEventListener('mousedown', (e) => self.handleMouseDown(e));
-            this.canvas.addEventListener('mousemove', (e) => self.handleMouseMove(e));
-            // mouseup no document (não só no canvas): soltar o botão FORA do canvas deixava o
-            // traço "preso" em isDrawing=true e ele continuava desenhando ao voltar sem botão.
-            document.addEventListener('mouseup', () => {
-                if (self.isDrawing || self.isDraggingComment) self.handleMouseUp();
-            });
-            this.canvas.addEventListener('click', (e) => self.handleClick(e));
-            
-            // Preview do cursor
-            this.canvas.addEventListener('mouseenter', () => self.showCursorPreview());
-            this.canvas.addEventListener('mouseleave', () => self.hideCursorPreview());
-            this.canvas.addEventListener('mousemove', (e) => self.updateCursorPreview(e));
-            
-            // Settings
-            document.getElementById('flowColor').addEventListener('change', (e) => {
-                self.flowColor = e.target.value;
-            });
-            
-            document.getElementById('lineWidth').addEventListener('input', (e) => {
-                self.lineWidth = parseInt(e.target.value);
-                document.getElementById('lineWidthDisplay').textContent = e.target.value + 'px';
-                self.updateCursorPreview();
-            });
-            
-            document.getElementById('eraseSize').addEventListener('input', (e) => {
-                self.eraseSize = parseInt(e.target.value);
-                document.getElementById('eraseSizeDisplay').textContent = e.target.value + 'px';
-                self.updateCursorPreview();
-            });
-            
-            document.getElementById('commentTextColor').addEventListener('change', (e) => {
-                self.commentTextColor = e.target.value;
-            });
-            
-            document.getElementById('commentBgColor').addEventListener('change', (e) => {
-                self.commentBgColor = e.target.value;
-            });
-            
-            document.getElementById('commentBorderColor').addEventListener('change', (e) => {
-                self.commentBorderColor = e.target.value;
-            });
-            
-            document.getElementById('commentFontFamily').addEventListener('change', (e) => {
-                self.commentFontFamily = e.target.value;
-            });
-            
-            document.getElementById('commentFontSize').addEventListener('input', (e) => {
-                self.commentFontSize = parseInt(e.target.value);
-                document.getElementById('fontSizeDisplay').textContent = e.target.value + 'px';
-            });
-            
-            document.getElementById('commentOpacity').addEventListener('input', (e) => {
-                self.commentOpacity = parseFloat(e.target.value);
-                document.getElementById('opacityDisplay').textContent = Math.round(e.target.value * 100) + '%';
-            });
-            
-            document.getElementById('animSpeed').addEventListener('input', (e) => {
-                const newSpeed = parseFloat(e.target.value);
-                if (!isFinite(newSpeed) || newSpeed <= 0) return;
-                // Recalcular animationStartTime preservando o progresso atual — sem isso,
-                // mudar a velocidade durante o playback reescala todo o tempo já decorrido
-                // e o playhead salta.
-                if (self.isPlaying) {
-                    self.animationStartTime = Date.now() - (self.animationProgress * self.totalAnimationTime * 1000 / newSpeed);
-                }
-                self.animationSpeed = newSpeed;
-                document.getElementById('speedDisplay').textContent = e.target.value + 'x';
-            });
+FlowAnimator.prototype._updateRecordUI = function() {
+    const btn = document.getElementById('recordBtn');
+    if (btn) {
+        btn.classList.toggle('recording', this.timelineMode);
+        const label = btn.querySelector('.btn-label');
+        if (label) label.textContent = this.timelineMode ? t('stopRecording') : t('record');
+    }
+    const pill = document.getElementById('recPill');
+    if (pill) {
+        pill.hidden = !this.timelineMode;
+        this._updateRecPill(this.currentTime());
+    }
+};
 
-            // Debounce: refresh da timeline a cada tecla é pesado, e parseInt('') = NaN
-            // quebrava playhead/régua enquanto o usuário limpava o campo para digitar.
-            let _durationDebounce = null;
-            document.getElementById('totalDuration').addEventListener('input', (e) => {
-                const value = parseInt(e.target.value);
-                if (!isFinite(value) || value < 1) return; // ignora estados intermediários de digitação
-                self.totalAnimationTime = value;
-                clearTimeout(_durationDebounce);
-                _durationDebounce = setTimeout(() => self.timeline.refresh(), 250);
-            });
+FlowAnimator.prototype._updateRecPill = function(seconds) {
+    const pill = document.getElementById('recPill');
+    if (pill && !pill.hidden) pill.textContent = `${this._recordContinuous ? 'REC' : t('recSequential')} ${Util.formatTime(seconds)}`;
+};
 
-            document.getElementById('persistPaths').addEventListener('change', (e) => {
-                self.persistPaths = e.target.checked;
-                self.invalidateRenderCaches();
-            });
-            
-            // Add comment
-            document.getElementById('addCommentBtn').addEventListener('click', () => self.startCommentPositioning());
-            
-            // Zoom controls
-            document.getElementById('zoomInBtn').addEventListener('click', () => self.zoomIn());
-            document.getElementById('zoomOutBtn').addEventListener('click', () => self.zoomOut());
-            document.getElementById('fitBtn').addEventListener('click', () => self.fitToScreen());
-            document.getElementById('centerBtn').addEventListener('click', () => self.centerCanvas());
-            
-            // Page selection - CORRIGIDO
-            document.getElementById('loadPageBtn').addEventListener('click', () => {
-                const pageNum = parseInt(document.getElementById('pageSelect').value);
-                if (pageNum && self.pdfDoc) {
-                    self.loadPage(pageNum);
-                } else {
-                    self.showTooltip('Selecione uma página válida!');
-                }
-            });
-            
-            // NOVO: Troca automática de página quando seletor muda
-            document.getElementById('pageSelect').addEventListener('change', (e) => {
-                const pageNum = parseInt(e.target.value);
-                if (pageNum && self.pdfDoc) {
-                    self.loadPage(pageNum);
-                }
-            });
-            
-            // Timeline resize
-            const resizeHandle = document.querySelector('.resize-handle-vertical');
-            let isResizing = false;
-            let startY = 0;
-            let startHeight = 300;
-            
-            resizeHandle.addEventListener('mousedown', (e) => {
-                isResizing = true;
-                startY = e.clientY;
-                startHeight = document.querySelector('.timeline-area').offsetHeight;
-                document.body.style.cursor = 'ns-resize';
-                e.preventDefault();
-            });
-            
-            document.addEventListener('mousemove', (e) => {
-                if (!isResizing) return;
-                
-                const deltaY = startY - e.clientY;
-                const newHeight = Math.max(200, Math.min(600, startHeight + deltaY));
-                document.querySelector('.timeline-area').style.height = newHeight + 'px';
-            });
-            
-            document.addEventListener('mouseup', () => {
-                if (isResizing) {
-                    isResizing = false;
-                    document.body.style.cursor = '';
-                }
-            });
-            
-            // Keyboard events
-            document.addEventListener('keydown', (e) => {
-                // Em campos de texto, Ctrl+Z/Ctrl+Y devem acionar o undo NATIVO do campo,
-                // não o undo do canvas (que ainda por cima dava preventDefault no nativo).
-                const inTextField = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+// Narrar (voice-over): reproduz a cena a partir da agulha e grava o microfone por cima
+FlowAnimator.prototype.toggleNarration = async function() {
+    if (this._narration) {
+        this.pause();
+        return;
+    }
+    if (!this._hasContent()) { this.showTooltip(t('addActionsFirst')); return; }
+    let session;
+    try {
+        session = await this.audio.startMicRecording();
+    } catch (e) {
+        this.handleError(t('micError'), e);
+        Toast.show(t('micError') + ': ' + (e.message || e), { kind: 'error' });
+        return;
+    }
+    if (this.animationProgress >= 1) this.animationProgress = 0;
+    const startTime = this.currentTime();
+    this._narration = session;
+    const btn = document.getElementById('narrateBtn');
+    if (btn) btn.classList.add('active');
+    Toast.show(t('narrationStarted'));
+    await this.play();
+    this._narration = null;
+    if (btn) btn.classList.remove('active');
+    const result = await session.stop();
+    await this._addRecordedAudio(result, startTime, t('narration'));
+};
 
-                // Undo: Ctrl+Z
-                if (!inTextField && (e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-                    e.preventDefault();
-                    self.undo();
-                    return;
-                }
-                // Redo: Ctrl+Y ou Ctrl+Shift+Z
-                if (!inTextField && (e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
-                    e.preventDefault();
-                    self.redo();
-                    return;
-                }
+// ─── Marcadores ────────────────────────────────────────────────────────────
 
-                // ESC para cancelar posicionamento de comentário ou modo crop
-                if (e.key === 'Escape') {
-                    if (self.isPositioningComment) {
-                        self.exitCommentPositioning();
-                        return;
-                    }
-                    if (self.mode === 'crop') {
-                        self._cropPreview  = null;
-                        self._cropDragging = false;
-                        self.drawCropOverlay();
-                        self.exitCropMode();
-                        return;
-                    }
-                    // Esc "no vazio" não faz nada — resetar o playhead sem pedir era surpreendente
-                }
-                
-                // Alt key for straight line (free)
-                if (e.key === 'Alt') {
-                    e.preventDefault();
-                    self.isAltPressed = true;
-                    self.updateStraightLineIndicator();
-                }
+FlowAnimator.prototype.addMarker = function(time, label) {
+    this.saveUndoState();
+    const m = {
+        id: Util.uid('mk'),
+        time: time != null ? time : this.currentTime(),
+        label: label || t('markerN', { n: this.markers.length + 1 })
+    };
+    this.markers.push(m);
+    this.markers.sort((a, b) => a.time - b.time);
+    this._afterContentChange();
+    this.showTooltip(t('markerAdded', { t: Util.num(m.time, 1) }));
+    return m;
+};
 
-                // Shift key for snapped straight line (45° increments)
-                if (e.key === 'Shift') {
-                    self.isShiftPressed = true;
-                    self.updateStraightLineIndicator();
-                }
-                
-                // Other shortcuts
-                if (inTextField) {
-                    return;
-                }
-                
-                switch(e.key) {
-                    case ' ':
-                        e.preventDefault();
-                        if (self.isPlaying) {
-                            self.pause();
-                        } else {
-                            self.play();
-                        }
-                        break;
-                    case 'd':
-                    case 'D':
-                        document.querySelector('[data-mode="draw"]').click();
-                        break;
-                    case 'e':
-                    case 'E':
-                        document.querySelector('[data-mode="erase"]').click();
-                        break;
-                    case 'c':
-                    case 'C':
-                        document.querySelector('[data-mode="comment"]').click();
-                        break;
-                }
-            });
-            
-            document.addEventListener('keyup', (e) => {
-                if (e.key === 'Alt') {
-                    self.isAltPressed = false;
-                    self.updateStraightLineIndicator();
-                }
-                if (e.key === 'Shift') {
-                    self.isShiftPressed = false;
-                    // Se estava desenhando com snap, finalizar a linha no endpoint atual
-                    if (self.isDrawingStraightLine && self.currentPath.length >= 2) {
-                        // manter currentPath como está (último endpoint snapped)
-                    }
-                    self.updateStraightLineIndicator();
-                }
-            });
-            
-            // Window blur - reset Alt e Shift
-            window.addEventListener('blur', () => {
-                self.isAltPressed   = false;
-                self.isShiftPressed = false;
-                self.updateStraightLineIndicator();
-                // Trocar de janela no meio do traço não dispara mouseup — finaliza aqui
-                if (self.isDrawing || self.isDraggingComment) self.handleMouseUp();
-            });
-        };
+FlowAnimator.prototype.renameMarker = async function(id) {
+    const m = this.markers.find((x) => x.id === id);
+    if (!m) return;
+    const name = await showPromptModal(t('markerRename'), m.label);
+    if (name == null) return;
+    this.saveUndoState();
+    m.label = String(name).slice(0, 60);
+    this._afterContentChange();
+};
 
-        FlowAnimator.prototype.updateCursor = function() {
-            if (this.mode === 'draw') {
-                this.canvas.style.cursor = 'crosshair';
-            } else if (this.mode === 'erase') {
-                this.canvas.style.cursor = 'grab';
-            } else if (this.mode === 'comment') {
-                this.canvas.style.cursor = 'text';
-            }
-        };
+// ─── Duração ───────────────────────────────────────────────────────────────
 
-        // NOVA FUNÇÃO: Mostrar preview do cursor
-        FlowAnimator.prototype.showCursorPreview = function() {
-            if (this.mode === 'draw') {
-                this.brushPreview.style.display = 'block';
-                this.eraserPreview.style.display = 'none';
-            } else if (this.mode === 'erase') {
-                this.brushPreview.style.display = 'none';
-                this.eraserPreview.style.display = 'block';
-            } else {
-                this.brushPreview.style.display = 'none';
-                this.eraserPreview.style.display = 'none';
-            }
-        };
+FlowAnimator.prototype.setTotalDuration = function(seconds, silent) {
+    const v = Util.clamp(Math.round(seconds * 10) / 10, 0.1, 3600);
+    const prevTime = this.currentTime();
+    this.totalAnimationTime = v;
+    this.animationProgress = Util.clamp(prevTime / v, 0, 1);
+    const input = document.getElementById('totalDuration');
+    if (input && document.activeElement !== input) input.value = v;
+    if (!this.timeline) return;
+    if (!silent) {
+        this.timeline.refresh();
+        this.updateTimeDisplay();
+        this.markDirty();
+    } else {
+        this.timeline.renderRuler();
+        this.timeline.updatePlayhead();
+    }
+};
 
-        // NOVA FUNÇÃO: Esconder preview do cursor
-        FlowAnimator.prototype.hideCursorPreview = function() {
-            this.brushPreview.style.display = 'none';
-            this.eraserPreview.style.display = 'none';
-        };
+// Estende a duração total se o conteúdo passar do fim (com folga de 1s)
+FlowAnimator.prototype._ensureDurationCovers = function(end) {
+    if (end > this.totalAnimationTime) {
+        this.setTotalDuration(Math.ceil(end + 1));
+        return true;
+    }
+    return false;
+};
 
-        // NOVA FUNÇÃO: Atualizar preview do cursor
-        // Fator tela/canvas: lineWidth/eraseSize estão em pixels do CANVAS; na tela o traço
-        // aparece multiplicado pelo zoom de exibição (ex.: 20px viram 9,4px em 47%).
-        FlowAnimator.prototype._screenScale = function() {
-            const rect = this.canvas.getBoundingClientRect();
-            return rect.width > 0 ? rect.width / this.canvas.width : 1;
-        };
+FlowAnimator.prototype.fitDurationToContent = function() {
+    const end = this._lastContentEnd();
+    if (end <= 0) { this.showTooltip(t('addActionsFirst')); return; }
+    this.saveUndoState();
+    this.setTotalDuration(Math.max(1, Math.ceil((end + 0.5) * 2) / 2));
+    this.showTooltip(t('durationFitted', { s: Util.num(this.totalAnimationTime, 1) }));
+};
 
-        FlowAnimator.prototype.updateCursorPreview = function(e) {
-            const k = this._screenScale();
-            const brushSize = Math.max(4, this.lineWidth * k);
-            const eraserSize = Math.max(4, this.eraseSize * k);
-            if (e) {
-                const preview = this.mode === 'draw' ? this.brushPreview : this.eraserPreview;
-                const size = this.mode === 'draw' ? brushSize : eraserSize;
-                
-                if (preview.style.display === 'block') {
-                    preview.style.left = (e.clientX - size / 2) + 'px';
-                    preview.style.top = (e.clientY - size / 2) + 'px';
-                    preview.style.width = size + 'px';
-                    preview.style.height = size + 'px';
-                }
-            } else {
-                // Apenas atualizar tamanho
-                this.brushPreview.style.width = brushSize + 'px';
-                this.brushPreview.style.height = brushSize + 'px';
-                this.eraserPreview.style.width = eraserSize + 'px';
-                this.eraserPreview.style.height = eraserSize + 'px';
-            }
-        };
+// ─── Limpar ────────────────────────────────────────────────────────────────
 
-        // Snap de ponto para o ângulo múltiplo de `step` graus mais próximo
-        FlowAnimator.prototype.snapAngle = function(start, end, step) {
-            const dx  = end.x - start.x;
-            const dy  = end.y - start.y;
-            const len = Math.sqrt(dx * dx + dy * dy);
-            if (len === 0) return end;
+FlowAnimator.prototype.clear = async function() {
+    const hadContent = this._hasContent() || this.markers.length > 0;
+    if (hadContent) {
+        if (!(await showConfirm(t('confirmClear')))) return;
+        // Snapshot ANTES de limpar: "Limpar" é desfazível com Ctrl+Z
+        this.saveUndoState();
+    }
 
-            const rawDeg  = Math.atan2(dy, dx) * 180 / Math.PI;  // -180..180
-            const snapped = Math.round(rawDeg / step) * step;
-            const rad     = snapped * Math.PI / 180;
+    this.actions = [];
+    this.comments = [];
+    this.cameraMoves = [];
+    this.audioClips = [];
+    this.markers = [];
+    this.currentPath = [];
+    this.isPlaying = false;
+    this.audio.stop();
+    this.animationProgress = 0;
+    this._resolvePlaybackEnd();
 
-            return {
-                x: start.x + len * Math.cos(rad),
-                y: start.y + len * Math.sin(rad),
-                snapDeg: ((snapped % 360) + 360) % 360   // 0..359 para display
-            };
-        };
+    this._afterContentChange();
+    this.updateTimeDisplay();
+    if (hadContent) {
+        Toast.show(t('cleared'), { action: { label: t('undo'), onClick: () => this.undo() } });
+    }
+};
 
-        FlowAnimator.prototype.updateStraightLineIndicator = function() {
-            const indicator = document.getElementById('straightLineIndicator');
-            const label     = document.getElementById('straightLineLabel');
-            const angleBadge = document.getElementById('angleDisplay');
-            const active    = this.mode === 'draw' || this.mode === 'erase';
+// ─── Ferramentas ───────────────────────────────────────────────────────────
 
-            if (this.isShiftPressed && active) {
-                indicator.classList.add('show', 'snap-mode');
-                indicator.classList.remove('snap-off');
-                label.textContent = '📐 Snap 45°';
-                angleBadge.textContent = this._lastSnapAngle != null
-                    ? this._lastSnapAngle + '°' : '—';
-            } else if (this.isAltPressed && active) {
-                indicator.classList.add('show');
-                indicator.classList.remove('snap-mode');
-                label.textContent = '📏 Linha Livre';
-                angleBadge.textContent = this._lastFreeAngle != null
-                    ? this._lastFreeAngle + '°' : '—';
-            } else {
-                indicator.classList.remove('show', 'snap-mode');
-            }
-        };
+FlowAnimator.TOOL_KEYS = {
+    v: 'select', g: 'pan', d: 'draw', p: 'draw', h: 'highlighter', e: 'erase', a: 'arrow', r: 'rect',
+    o: 'ellipse', c: 'comment', t: 'comment', n: 'badge', z: 'laser', s: 'spotlight', x: 'redact', f: 'camera'
+};
 
-        FlowAnimator.prototype.updateCanvasInfo = function() {
-            const info = `${this.canvas.width}x${this.canvas.height} | Zoom: ${Math.round(this.displayScale * 100)}%`;
-            document.getElementById('canvasInfo').textContent = info;
-            document.getElementById('zoomDisplay').textContent = Math.round(this.displayScale * 100) + '%';
-        };
+FlowAnimator.prototype.setMode = function(mode) {
+    if (this.mode === 'crop' && mode !== 'crop') this.exitCropMode(true);
+    const changed = this.mode !== mode;
+    this.mode = mode;
+    document.querySelectorAll('.mode-btn').forEach((b) => {
+        const active = b.dataset.mode === mode;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    this.updateCursor();
+    this.updateStraightLineIndicator();
+    this._syncQuickColor();
+    this.hideCursorPreview();
+    if (changed && this.timeline) this.timeline.refresh();
+    if (this.inspector) this.inspector.refresh();
+};
 
-        // Mouse handling
-        FlowAnimator.prototype.getMousePos = function(e) {
-            const rect = this.canvas.getBoundingClientRect();
-            const scaleX = this.canvas.width / rect.width;
-            const scaleY = this.canvas.height / rect.height;
-            
-            return {
-                x: (e.clientX - rect.left) * scaleX,
-                y: (e.clientY - rect.top) * scaleY
-            };
-        };
+// Escala das ferramentas para cenas grandes: espessuras e fontes são definidas para uma cena
+// de referência de 1920px; numa página de PDF de 2400px elas crescem na mesma proporção
+// (senão traços de 3px ficam finos demais ao ver a página inteira).
+FlowAnimator.prototype._toolScale = function() {
+    return Math.max(1, Math.max(this.canvas.width, this.canvas.height) / 1920);
+};
 
-        FlowAnimator.prototype.handleMouseDown = function(e) {
-            // Durante o posicionamento de comentário, o clique é só para posicionar —
-            // sem isso, clicar no canvas em modo desenhar/apagar também registrava uma
-            // ação-fantasma de um ponto.
-            if (this.isPositioningComment) return;
+// Cor da ferramenta atual (botão de cor rápida da barra)
+FlowAnimator.prototype._toolColorKey = function() {
+    switch (this.mode) {
+        case 'highlighter': return 'highlightColor';
+        case 'comment': return 'commentBorderColor';
+        case 'badge': return 'badgeColor';
+        case 'laser': return 'laserColor';
+        default: return 'flowColor';
+    }
+};
 
-            const pos = this.getMousePos(e);
+FlowAnimator.prototype._syncQuickColor = function() {
+    const q = document.getElementById('quickColor');
+    if (q) q.value = this[this._toolColorKey()] || '#4a90e2';
+};
 
-            // Comentários são sempre arrastáveis em qualquer modo
-            // (verificar antes de iniciar desenho/apagador)
-            const clickedComment = this.getCommentAt(pos.x, pos.y);
-            if (clickedComment) {
-                this.selectedComment = clickedComment;
-                this.isDraggingComment = true;
-                this._commentDragSnapshotPending = true; // snapshot no primeiro movimento real
-                this.dragOffset.x = pos.x - clickedComment.x;
-                this.dragOffset.y = pos.y - clickedComment.y;
-                this.canvas.style.cursor = 'grabbing';
-                return;
-            }
+// ─── Comentários ───────────────────────────────────────────────────────────
 
-            if (this.mode === 'draw' || this.mode === 'erase') {
-                this.startDrawing(e);
-            }
-        };
+FlowAnimator.prototype._newComment = function(x, y, text, time, duration) {
+    const c = {
+        id: Util.uid('c'),
+        x,
+        y,
+        text,
+        time,
+        duration,
+        textColor: this.commentTextColor,
+        bgColor: this.commentBgColor,
+        borderColor: this.commentBorderColor,
+        fontFamily: this.commentFontFamily,
+        fontSize: Math.round(this.commentFontSize * this._toolScale()),
+        opacity: this.commentOpacity,
+        animIn: this.commentAnimIn,
+        animOut: this.commentAnimOut
+    };
+    if (this.commentBalloon) c.pointer = { x: x + 140 * this._toolScale(), y: y + 110 * this._toolScale() };
+    return c;
+};
 
-        FlowAnimator.prototype.startCommentPositioning = function() {
-            const text = document.getElementById('commentText').value.trim();
-            if (!text) {
-                this.showTooltip('Digite um texto para o comentário primeiro!');
-                return;
-            }
-            if (this.isPositioningComment) return; // já está em modo posicionamento
-            
-            this.isPositioningComment = true;
-            this.canvas.classList.add('comment-positioning');
-            
-            // Adicionar preview apenas se não estiver no DOM
-            if (!this.commentPreview.parentNode) {
-                document.body.appendChild(this.commentPreview);
-            }
-            this.commentPreview.textContent = text;
-            this.commentPreview.style.display = 'block';
-            
-            // Remover ajuda anterior se ainda existir
-            const existingHelp = document.querySelector('.comment-positioning-help');
-            if (existingHelp && existingHelp.parentNode) document.body.removeChild(existingHelp);
-            
-            // Mostrar ajuda
-            const help = document.createElement('div');
-            help.className = 'comment-positioning-help show';
-            help.textContent = '📍 Clique onde deseja posicionar o comentário | ESC para cancelar';
-            document.body.appendChild(help);
-            
-            // Auto-remover ajuda após 3 segundos
-            setTimeout(() => {
-                if (help.parentNode) document.body.removeChild(help);
-            }, 3000);
-        };
+FlowAnimator.prototype._commentTiming = function() {
+    const field = parseFloat(document.getElementById('commentTime').value);
+    const duration = Util.clamp(parseFloat(document.getElementById('commentDuration').value) || 3, 0.2, 600);
+    if (this.timelineMode) {
+        const tm = this._timingForNew(duration, 'comment');
+        return { time: tm.startTime, duration };
+    }
+    return { time: isFinite(field) && field >= 0 ? field : this.currentTime(), duration };
+};
 
-        // NOVA FUNÇÃO: Sair do modo de posicionamento
-        FlowAnimator.prototype.exitCommentPositioning = function() {
-            this.isPositioningComment = false;
-            this.canvas.classList.remove('comment-positioning');
-            this.commentPreview.style.display = 'none';
-            if (this.commentPreview.parentNode) {
-                document.body.removeChild(this.commentPreview);
-            }
-            
-            // Remover ajuda se ainda estiver visível
-            const help = document.querySelector('.comment-positioning-help');
-            if (help && help.parentNode) {
-                document.body.removeChild(help);
-            }
-        };
+// Cria um comentário na posição (coordenadas do canvas)
+FlowAnimator.prototype.placeComment = function(pos, text) {
+    const clean = String(text || '').trim();
+    if (!clean) return null;
+    const { time, duration } = this._commentTiming();
+    this.saveUndoState();
+    const c = this._newComment(pos.x, pos.y, clean, time, duration);
+    this.comments.push(c);
+    this._commitTiming(time, duration);
+    this._commentTimeManual = false;
+    this._afterContentChange();
+    this.showTooltip(t('commentPlaced', { t: Util.num(time, 1) }));
+    return c;
+};
 
-        FlowAnimator.prototype.handleMouseMove = function(e) {
-            const pos = this.getMousePos(e);
-            
-            // Preview do comentário durante posicionamento
-            if (this.isPositioningComment) {
-                this.commentPreview.style.left = (e.clientX + 10) + 'px';
-                this.commentPreview.style.top = (e.clientY - 10) + 'px';
-                return;
-            }
-            
-            if (this.isDraggingComment && this.selectedComment) {
-                // Snapshot no primeiro movimento real, para o arrasto ser desfazível
-                // (só aqui — um clique sem arrastar não polui a pilha de undo)
-                if (this._commentDragSnapshotPending) {
-                    this._commentDragSnapshotPending = false;
-                    this.saveUndoState();
-                }
-                this.selectedComment.x = pos.x - this.dragOffset.x;
-                this.selectedComment.y = pos.y - this.dragOffset.y;
-                // Throttle: só redesenha se não há um frame pendente
-                if (!this._dragRafPending) {
-                    this._dragRafPending = true;
-                    requestAnimationFrame(() => {
-                        this._dragRafPending = false;
-                        this.rebuildDrawingCanvas();
-                        this.redrawMainCanvas();
-                    });
-                }
-                return;
-            }
-            
-            // Cursor grab quando hover sobre um comentário (qualquer modo)
-            if (!this.isDrawing && this.comments.length > 0) {
-                const hovered = this.getCommentAt(pos.x, pos.y);
-                if (hovered) {
-                    this.canvas.style.cursor = 'grab';
-                } else {
-                    this.updateCursor();
-                }
-            }
-            
-            if (this.isDrawing) {
-                this.draw(e);
-            }
-            
-            // Atualizar preview do cursor
-            this.updateCursorPreview(e);
-        };
+FlowAnimator.prototype.nextBadgeNumber = function() {
+    let max = 0;
+    for (const c of this.comments) if (c.kind === 'badge') max = Math.max(max, parseInt(c.text, 10) || 0);
+    return max + 1;
+};
 
-        FlowAnimator.prototype.handleMouseUp = function() {
-            if (this.isDraggingComment) {
-                this.isDraggingComment = false;
-                this.selectedComment = null;
-                this.updateCursor(); // restaurar cursor do modo atual
-            }
-            
-            this.stopDrawing();
-        };
+FlowAnimator.prototype.placeBadge = function(pos) {
+    const input = document.getElementById('badgeNext');
+    let n = parseInt(input && input.value, 10);
+    if (!isFinite(n)) n = this.nextBadgeNumber();
+    this.saveUndoState();
+    const time = this.timelineMode ? this._timingForNew(1, 'badge').startTime : this.currentTime();
+    const c = {
+        id: Util.uid('c'),
+        kind: 'badge',
+        x: pos.x,
+        y: pos.y,
+        text: String(n),
+        time,
+        duration: Math.max(1, this.totalAnimationTime - time),
+        textColor: '#ffffff',
+        bgColor: this.badgeColor,
+        borderColor: '#ffffff',
+        fontFamily: 'Arial',
+        fontSize: Math.max(18, Math.round(this.canvas.width / 70)),
+        opacity: 1,
+        animIn: 'pop',
+        animOut: 'none'
+    };
+    this.comments.push(c);
+    if (this.timelineMode) this._commitTiming(time, 1);
+    if (input) input.value = n + 1;
+    this._afterContentChange();
+    return c;
+};
 
-        FlowAnimator.prototype.handleClick = function(e) {
-            if (this.isPositioningComment) {
-                const pos = this.getMousePos(e);
-                const text = document.getElementById('commentText').value.trim();
-                const time = parseFloat(document.getElementById('commentTime').value) || 0;
-                const duration = parseFloat(document.getElementById('commentDuration').value) || 3;
-                
-                if (text) {
-                    this.saveUndoState();
-                    this.comments.push({
-                        x: pos.x,
-                        y: pos.y,
-                        text: text,
-                        time: time,
-                        duration: duration,
-                        textColor: this.commentTextColor,
-                        bgColor: this.commentBgColor,
-                        borderColor: this.commentBorderColor,
-                        fontFamily: this.commentFontFamily,
-                        fontSize: this.commentFontSize,
-                        opacity: this.commentOpacity
-                    });
-                    
-                    document.getElementById('commentText').value = '';
-                    this.rebuildDrawingCanvas();
-                    this.redrawMainCanvas();
-                    this.timeline.refresh();
-                    this.updateInfo();
-                    this.showTooltip('💬 Comentário posicionado!');
-                }
-                
-                this.exitCommentPositioning();
-                return;
-            }
-            
-            if (this.mode === 'comment' && !this.isDraggingComment) {
-                this.startCommentPositioning();
-            }
-        };
+FlowAnimator.prototype.startCommentPositioning = function() {
+    const text = document.getElementById('commentText').value.trim();
+    if (!text) {
+        this.showTooltip(t('typeCommentFirst'));
+        document.getElementById('commentText').focus();
+        return;
+    }
+    if (this.isPositioningComment) return;
+    this.isPositioningComment = true;
+    this.canvas.classList.add('comment-positioning');
+    this.commentPreview.textContent = text;
+    this.commentPreview.style.display = 'block';
+    this.commentPreview.style.left = '-9999px';
+    if (!this.commentPreview.parentNode) document.body.appendChild(this.commentPreview);
+    Toast.show(t('positionCommentHelp'));
+};
 
-        // Layout do texto do comentário: respeita quebras de linha (Enter no campo) e quebra
-        // automaticamente linhas mais largas que COMMENT_MAX_WIDTH. Cacheado por (texto, fonte,
-        // tamanho) — getCommentAt roda a cada mousemove e measureText por comentário é caro.
-        FlowAnimator.COMMENT_MAX_WIDTH = 480;
-        FlowAnimator.COMMENT_PADDING = 10;
+FlowAnimator.prototype.exitCommentPositioning = function() {
+    this.isPositioningComment = false;
+    this.canvas.classList.remove('comment-positioning');
+    this.commentPreview.style.display = 'none';
+    if (this.commentPreview.parentNode) this.commentPreview.parentNode.removeChild(this.commentPreview);
+};
 
-        FlowAnimator.prototype._getCommentLayout = function(comment) {
-            const fontFamily = comment.fontFamily || this.commentFontFamily;
-            const fontSize   = comment.fontSize   || this.commentFontSize;
-            const text = String(comment.text == null ? '' : comment.text);
-            const key = `${text}|${fontFamily}|${fontSize}`;
-            if (comment._layoutKey !== key) {
-                const ctx = this.ctx;
-                ctx.save();
-                ctx.font = `${fontSize}px ${fontFamily}`;
-                const maxW = FlowAnimator.COMMENT_MAX_WIDTH;
-                const lines = [];
-                for (const para of text.split(/\r?\n/)) {
-                    const words = para.split(' ');
-                    let line = '';
-                    for (const word of words) {
-                        const candidate = line ? line + ' ' + word : word;
-                        if (line && ctx.measureText(candidate).width > maxW) {
-                            lines.push(line);
-                            line = word;
-                        } else {
-                            line = candidate;
-                        }
-                    }
+// Layout do texto: respeita quebras de linha (Enter) e quebra automaticamente linhas mais
+// largas que maxWidth. Cacheado por (texto, fonte, tamanho) — getCommentAt roda a cada
+// pointermove e measureText por comentário é caro.
+FlowAnimator.COMMENT_MAX_WIDTH = 480;
+FlowAnimator.COMMENT_PADDING = 12;
+
+FlowAnimator.prototype._getCommentLayout = function(comment) {
+    const fontFamily = comment.fontFamily || this.commentFontFamily;
+    const fontSize = comment.fontSize || this.commentFontSize;
+    const bold = comment.kind === 'badge' ? 'bold ' : '';
+    const text = String(comment.text == null ? '' : comment.text);
+    const maxW = comment.maxWidth || FlowAnimator.COMMENT_MAX_WIDTH * Math.max(1, fontSize / 24);
+    const key = `${text}|${fontFamily}|${fontSize}|${bold}|${maxW}`;
+    if (comment._layoutKey !== key) {
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.font = `${bold}${fontSize}px ${fontFamily}`;
+        const lines = [];
+        for (const para of text.split(/\r?\n/)) {
+            const words = para.split(' ');
+            let line = '';
+            for (const word of words) {
+                const candidate = line ? line + ' ' + word : word;
+                if (line && ctx.measureText(candidate).width > maxW) {
                     lines.push(line);
-                }
-                let width = 0;
-                for (const l of lines) width = Math.max(width, ctx.measureText(l).width);
-                ctx.restore();
-                comment._layout = { lines, width, lineHeight: Math.round(fontSize * 1.3) };
-                comment._layoutKey = key;
-            }
-            return comment._layout;
-        };
-
-        // Caixa (centrada em x,y) ocupada pelo comentário no canvas
-        FlowAnimator.prototype._getCommentBox = function(comment) {
-            const layout = this._getCommentLayout(comment);
-            const pad = FlowAnimator.COMMENT_PADDING;
-            const w = layout.width + pad * 2;
-            const h = layout.lines.length * layout.lineHeight + pad * 2;
-            return { x: comment.x - w / 2, y: comment.y - h / 2, w, h, layout };
-        };
-
-        // Retorna o comentário sob o ponto (x,y) usando a caixa real do texto
-        FlowAnimator.prototype.getCommentAt = function(x, y) {
-            for (let i = this.comments.length - 1; i >= 0; i--) {
-                const comment = this.comments[i];
-                const b = this._getCommentBox(comment);
-                if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
-                    return comment;
-                }
-            }
-            return null;
-        };
-
-        // Drawing
-        FlowAnimator.prototype.startDrawing = function(e) {
-            this.isDrawing = true;
-            const pos = this.getMousePos(e);
-            this.currentPath = [pos];
-            this.drawStartTime = Date.now();
-
-            // Modo gravação: a agulha "pula" para o início do próximo traço (recalculado
-            // a partir do conteúdo atual, então já reflete undos/deleções) e o relógio
-            // recomeça dali, para o novo traço ser gravado logo após o anterior.
-            if (this.timelineMode) {
-                this._recordCursor = this._nextRecordStart();
-                this._startRecordClock(this._recordCursor);
-                this._seekNeedle(this._recordCursor);
-            }
-
-            // Straight line mode: Alt = livre, Shift = snap 45°
-            if (this.isAltPressed || this.isShiftPressed) {
-                this.isDrawingStraightLine = true;
-                this.straightLineStart = pos;
-            } else {
-                this.isDrawingStraightLine = false;
-            }
-            
-            // Mostrar o primeiro ponto imediatamente
-            if (this.mode === 'draw') {
-                this.redrawWithCurrentPath();
-            }
-        };
-
-        FlowAnimator.prototype.draw = function(e) {
-            if (!this.isDrawing) return;
-            
-            const pos = this.getMousePos(e);
-            
-            // Straight line mode
-            if (this.isDrawingStraightLine && this.straightLineStart) {
-                let endpoint = pos;
-
-                if (this.isShiftPressed) {
-                    // Snap para múltiplos de 45°
-                    const snapped = this.snapAngle(this.straightLineStart, pos, 45);
-                    endpoint = snapped;
-                    this._lastSnapAngle = snapped.snapDeg;
-                    this.updateStraightLineIndicator();
-                } else if (this.isAltPressed) {
-                    // Linha livre: calcular ângulo real para exibir
-                    const dx = pos.x - this.straightLineStart.x;
-                    const dy = pos.y - this.straightLineStart.y;
-                    const deg = ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360;
-                    this._lastFreeAngle = Math.round(deg);
-                    this.updateStraightLineIndicator();
-                }
-
-                this.currentPath = [this.straightLineStart, endpoint];
-            } else {
-                this.currentPath.push(pos);
-            }
-            
-            if (this.mode === 'draw') {
-                // Redesenhar tudo + o caminho atual sendo desenhado
-                this.redrawWithCurrentPath();
-            } else if (this.mode === 'erase') {
-                // CORRIGIDO: Apagar apenas no canvas de desenho
-                this.erasePathFromDrawing(this.currentPath, this.eraseSize);
-            }
-        };
-
-        FlowAnimator.prototype.stopDrawing = function() {
-            if (!this.isDrawing || this.currentPath.length < 1) {
-                this.isDrawing = false;
-                this.isDrawingStraightLine = false;
-                this.straightLineStart = null;
-                return;
-            }
-            
-            this.isDrawing = false;
-
-            const drawnSeconds = (Date.now() - this.drawStartTime) / 1000;
-
-            // Tempo de início e duração dependem do modo:
-            // - Gravação (timelineMode): sequencial — começa no cursor (fim do traço
-            //   anterior) e dura o tempo real de desenho (playback fiel ao ritmo).
-            // - Normal: começa na posição atual da agulha; duração comprimida (×0.5).
-            let startTime, finalDuration;
-            if (this.timelineMode) {
-                startTime = this._nextRecordStart();
-                finalDuration = Math.max(0.5, Math.min(drawnSeconds, 15));
-            } else {
-                startTime = this.animationProgress * this.totalAnimationTime;
-                finalDuration = Math.max(0.5, Math.min(drawnSeconds * 0.5, 10));
-            }
-
-            this.saveUndoState(); // snapshot antes de adicionar ação
-
-            this.actions.push({
-                type: this.mode,
-                points: [...this.currentPath],
-                color: this.flowColor,
-                width: this.lineWidth,
-                size: this.eraseSize,
-                duration: finalDuration,
-                startTime: startTime, // TEMPO ABSOLUTO, não sequencial
-                timestamp: Date.now()
-            });
-
-            if (this.timelineMode) {
-                // Avança o cursor para o fim deste traço e estende a duração total se
-                // o conteúdo passou do fim, para não ficar fora da faixa reproduzível.
-                this._recordCursor = startTime + finalDuration;
-                if (this._recordCursor > this.totalAnimationTime) {
-                    this.totalAnimationTime = Math.ceil(this._recordCursor + 2);
-                    const totalInput = document.getElementById('totalDuration');
-                    if (totalInput) totalInput.value = this.totalAnimationTime;
-                }
-                // Fim do traço: para o relógio e deixa a agulha parada no fim deste traço
-                // (base do próximo). Ela não avança sozinha durante a pausa.
-                this._stopRecordClock();
-                this._seekNeedle(this._recordCursor);
-            }
-
-            this.currentPath = [];
-            this.isDrawingStraightLine = false;
-            this.straightLineStart     = null;
-            this._lastSnapAngle        = null;
-            this._lastFreeAngle        = null;
-
-            // Redesenhar tudo após adicionar a ação
-            this.rebuildDrawingCanvas();
-            this.redrawMainCanvas();
-            this.timeline.refresh();
-            this.updateInfo();
-        };
-
-        FlowAnimator.prototype.drawPath = function(points, color, width, progress = 1) {
-            if (points.length < 1) return;
-            
-            const ctx = this.ctx;
-            ctx.save();
-            ctx.strokeStyle = color;
-            ctx.lineWidth = width;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            
-            if (points.length === 1) {
-                // Single point
-                ctx.beginPath();
-                ctx.arc(points[0].x, points[0].y, width / 2, 0, Math.PI * 2);
-                ctx.fillStyle = color;
-                ctx.fill();
-            } else {
-                // Multiple points
-                ctx.beginPath();
-                const drawPoints = Math.floor(points.length * progress);
-                
-                ctx.moveTo(points[0].x, points[0].y);
-                for (let i = 1; i < drawPoints; i++) {
-                    ctx.lineTo(points[i].x, points[i].y);
-                }
-                ctx.stroke();
-            }
-            
-            ctx.restore();
-        };
-
-        // NOVA FUNÇÃO: Apagar apenas do canvas de desenho - CORRIGIDO
-        FlowAnimator.prototype.erasePathFromDrawing = function(points, size) {
-            if (points.length < 1) return;
-            
-            // Aplicar a operação de apagar APENAS no canvas de desenho
-            const ctx = this.drawingCtx;
-            ctx.save();
-            ctx.globalCompositeOperation = 'destination-out';
-            ctx.strokeStyle = 'rgba(0,0,0,1)';
-            ctx.lineWidth = size;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            
-            if (points.length === 1) {
-                // Single point
-                ctx.beginPath();
-                ctx.arc(points[0].x, points[0].y, size / 2, 0, Math.PI * 2);
-                ctx.fill();
-            } else {
-                // Multiple points
-                ctx.beginPath();
-                ctx.moveTo(points[0].x, points[0].y);
-                for (let i = 1; i < points.length; i++) {
-                    ctx.lineTo(points[i].x, points[i].y);
-                }
-                ctx.stroke();
-            }
-            
-            ctx.restore();
-            
-            // Redesenhar APENAS o canvas principal (sem afetar o fundo)
-            this.redrawMainCanvas();
-        };
-
-        FlowAnimator.prototype.drawComments = function() {
-            for (let comment of this.comments) {
-                this.drawComment(comment);
-            }
-        };
-
-        FlowAnimator.prototype.drawComment = function(comment) {
-            const ctx = this.ctx;
-            ctx.save();
-            
-            const fontFamily = comment.fontFamily || this.commentFontFamily;
-            const fontSize = comment.fontSize || this.commentFontSize;
-            const textColor = comment.textColor || this.commentTextColor;
-            const bgColor = comment.bgColor || this.commentBgColor;
-            const borderColor = comment.borderColor || comment.color || this.commentBorderColor;
-            const opacity = comment.opacity !== undefined ? comment.opacity : this.commentOpacity;
-            
-            const box = this._getCommentBox(comment);
-            ctx.font = `${fontSize}px ${fontFamily}`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            
-            // Background com opacidade
-            ctx.fillStyle = this.hexToRgba(bgColor, opacity);
-            ctx.fillRect(box.x, box.y, box.w, box.h);
-            
-            // Border
-            ctx.strokeStyle = borderColor;
-            ctx.lineWidth = 2;
-            ctx.strokeRect(box.x, box.y, box.w, box.h);
-            
-            // Texto, linha a linha (fillText ignora "\n")
-            ctx.fillStyle = textColor;
-            const { lines, lineHeight } = box.layout;
-            const firstY = comment.y - ((lines.length - 1) * lineHeight) / 2;
-            lines.forEach((line, i) => ctx.fillText(line, comment.x, firstY + i * lineHeight));
-            
-            ctx.restore();
-        };
-
-        // NOVA FUNÇÃO: Converter hex para rgba
-        FlowAnimator.prototype.hexToRgba = function(hex, alpha) {
-            const r = parseInt(hex.slice(1, 3), 16);
-            const g = parseInt(hex.slice(3, 5), 16);
-            const b = parseInt(hex.slice(5, 7), 16);
-            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-        };
-
-        // Animation - ATUALIZADO para suporte a tracks paralelas
-        FlowAnimator.prototype.renderAnimationFrame = function() {
-            try {
-                const currentTime = this.animationProgress * this.totalAnimationTime;
-                
-                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-                this._drawBackground(this.ctx);
-
-                // NOVO SISTEMA: Processar todas as tracks em paralelo
-                this.renderParallelTracks(currentTime);
-                
-            } catch (error) {
-                this.handleError('Erro na renderização da animação', error);
-            }
-        };
-
-        // Uma track oculta (botão 👁️ na timeline) não deve renderizar suas ações.
-        FlowAnimator.prototype._isTypeVisible = function(type) {
-            return !this.timeline || this.timeline.isTypeVisible(type);
-        };
-
-        // Invalida caches de renderização (chamar após qualquer mutação de actions,
-        // toggle de persistPaths ou de visibilidade de track).
-        FlowAnimator.prototype.invalidateRenderCaches = function() {
-            this._persistedDrawsKey = null;
-        };
-
-        // Renderizar tracks em paralelo - usa canvas offscreen reutilizável.
-        // Desenhos já concluídos (persistPaths) são cacheados em _persistedDrawsCanvas e
-        // recompostos via drawImage, em vez de re-traçar cada um a cada frame; os
-        // apagamentos continuam aplicados por cima de tudo a cada frame (semântica original).
-        FlowAnimator.prototype.renderParallelTracks = function(currentTime) {
-            const drawCanvas = this._offscreenCanvas;
-            const drawCtx = this._offscreenCtx;
-            drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-
-            // Desenhos e apagamentos são aplicados INTERCALADOS em ordem cronológica de início —
-            // a mesma ordem de rebuildDrawingCanvas(). Antes os apagamentos rodavam depois de
-            // todos os desenhos, então um "apagar" em t=2s apagava também um traço feito em t=5s
-            // no mesmo lugar: o vídeo mostrava algo diferente da edição.
-            const actions = this.actions;
-            const order = actions.map((_, i) => i).sort((a, b) =>
-                ((actions[a].startTime || 0) - (actions[b].startTime || 0)) || (a - b));
-            const visible = (a) => (a.type === 'draw' || a.type === 'erase') && this._isTypeVisible(a.type);
-            const endOf = (a) => (a.startTime || 0) + (a.duration || 2);
-
-            // PASSO 1: prefixo cronológico de ações já concluídas — composto uma vez em
-            // _persistedDrawsCanvas e reaproveitado via drawImage enquanto o prefixo não mudar.
-            let prefixLen = 0;
-            if (this.persistPaths) {
-                while (prefixLen < order.length) {
-                    const a = actions[order[prefixLen]];
-                    if (visible(a) && endOf(a) >= currentTime) break;
-                    prefixLen++;
-                }
-            }
-            const cacheKey = order.slice(0, prefixLen).join(',');
-            if (cacheKey !== this._persistedDrawsKey) {
-                const pCtx = this._persistedDrawsCtx;
-                pCtx.clearRect(0, 0, this._persistedDrawsCanvas.width, this._persistedDrawsCanvas.height);
-                for (let k = 0; k < prefixLen; k++) {
-                    const a = actions[order[k]];
-                    if (!visible(a)) continue;
-                    if (a.type === 'draw') this.drawAnimatedPath(pCtx, a.points, a.color, a.width, 1);
-                    else this.eraseAnimatedPathOnCanvas(pCtx, a.points, a.size, 1);
-                }
-                this._persistedDrawsKey = cacheKey;
-            }
-            if (prefixLen > 0) {
-                drawCtx.drawImage(this._persistedDrawsCanvas, 0, 0);
-            }
-
-            // PASSO 2: o restante, na mesma ordem — ativos com progresso parcial e (com
-            // persistPaths) os concluídos que vêm depois de algum ativo na cronologia.
-            for (let k = prefixLen; k < order.length; k++) {
-                const a = actions[order[k]];
-                if (!visible(a)) continue;
-                const start = a.startTime || 0;
-                const duration = a.duration || 2;
-                let progress;
-                if (currentTime < start) continue;
-                if (currentTime <= start + duration) progress = (currentTime - start) / duration;
-                else if (this.persistPaths) progress = 1;
-                else continue;
-                if (a.type === 'draw') this.drawAnimatedPath(drawCtx, a.points, a.color, a.width, progress);
-                else this.eraseAnimatedPathOnCanvas(drawCtx, a.points, a.size, progress);
-            }
-
-            // PASSO 3: Aplicar resultado final no canvas principal (fundo fica intacto)
-            this.ctx.drawImage(drawCanvas, 0, 0);
-
-            // PASSO 4: Processar comentários em paralelo
-            if (this._isTypeVisible('comment')) {
-                for (let comment of this.comments) {
-                    const startTime = comment.time || 0;
-                    const endTime = startTime + (comment.duration || 3);
-
-                    if (currentTime >= startTime && currentTime <= endTime) {
-                        this.drawComment(comment);
-                    }
-                }
-            }
-        };
-
-        // MÉTODO UNIFICADO: Animar desenho ou apagamento num canvas
-        FlowAnimator.prototype.animatePathOnCanvas = function(ctx, points, options, progress) {
-            if (!points || points.length < 1) return;
-            const isErase = options.mode === 'erase';
-            ctx.save();
-            if (isErase) {
-                ctx.globalCompositeOperation = 'destination-out';
-                ctx.strokeStyle = 'rgba(0,0,0,1)';
-                ctx.lineWidth = options.size;
-            } else {
-                ctx.strokeStyle = options.color;
-                ctx.lineWidth = options.width;
-            }
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-
-            if (points.length === 1) {
-                ctx.globalAlpha = progress;
-                ctx.beginPath();
-                const radius = isErase ? options.size / 2 : options.width / 2;
-                ctx.arc(points[0].x, points[0].y, radius, 0, Math.PI * 2);
-                if (!isErase) ctx.fillStyle = options.color;
-                ctx.fill();
-            } else {
-                // Progresso por COMPRIMENTO DE ARCO, não por quantidade de pontos: antes um
-                // segmento longo com poucos pontos (ex.: linha reta Alt/Shift = 2 pontos) ficava
-                // completo na metade da duração, e a velocidade variava com a do mouse.
-                const cum = this._cumulativeLengths(points);
-                const total = cum[cum.length - 1];
-                const target = total * Math.max(0, Math.min(1, progress));
-                ctx.beginPath();
-                ctx.moveTo(points[0].x, points[0].y);
-                let i = 1;
-                while (i < points.length && cum[i] <= target) {
-                    ctx.lineTo(points[i].x, points[i].y);
-                    i++;
-                }
-                if (i < points.length && target > cum[i - 1]) {
-                    const segLen = cum[i] - cum[i - 1];
-                    const f = segLen > 0 ? (target - cum[i - 1]) / segLen : 0;
-                    const lp = points[i - 1];
-                    const np = points[i];
-                    ctx.lineTo(lp.x + (np.x - lp.x) * f, lp.y + (np.y - lp.y) * f);
-                }
-                ctx.stroke();
-            }
-            ctx.restore();
-        };
-
-        // Comprimentos acumulados de uma polilinha (cum[0] = 0), cacheados por array de pontos.
-        // Seguro porque `points` nunca é mutado in-place (só reatribuído) — ver saveUndoState.
-        FlowAnimator.prototype._cumulativeLengths = function(points) {
-            if (!this._cumLenCache) this._cumLenCache = new WeakMap();
-            let cum = this._cumLenCache.get(points);
-            if (!cum || cum.length !== points.length) {
-                cum = new Float64Array(points.length);
-                for (let i = 1; i < points.length; i++) {
-                    cum[i] = cum[i - 1] + Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
-                }
-                this._cumLenCache.set(points, cum);
-            }
-            return cum;
-        };
-
-        // Mantidos como wrappers para compatibilidade com código existente
-        FlowAnimator.prototype.drawAnimatedPath = function(ctx, points, color, width, progress) {
-            this.animatePathOnCanvas(ctx, points, { mode: 'draw', color, width }, progress);
-        };
-
-        FlowAnimator.prototype.eraseAnimatedPathOnCanvas = function(ctx, points, size, progress) {
-            this.animatePathOnCanvas(ctx, points, { mode: 'erase', size }, progress);
-        };
-
-        // play() retorna uma Promise que resolve quando a reprodução para (fim natural, pause ou reset),
-        // permitindo que quem exporta vídeo dê "await" em vez de fazer polling em isPlaying.
-        FlowAnimator.prototype.play = function() {
-            if (this.actions.length === 0 && this.comments.length === 0) {
-                this.showTooltip('Adicione algumas ações primeiro!');
-                return Promise.resolve();
-            }
-
-            // Já tocando: reutiliza a Promise em andamento em vez de criar outra —
-            // sobrescrever _onPlaybackEnd deixaria a Promise anterior (que o export de
-            // vídeo pode estar aguardando) pendurada para sempre.
-            if (this.isPlaying && this._playbackPromise) {
-                return this._playbackPromise;
-            }
-
-            this.isPlaying = true;
-            this.animationStartTime = Date.now() - (this.animationProgress * this.totalAnimationTime * 1000 / this.animationSpeed);
-            this._playbackPromise = new Promise((resolve) => {
-                this._onPlaybackEnd = resolve;
-                this.animate();
-            });
-            return this._playbackPromise;
-        };
-
-        FlowAnimator.prototype._resolvePlaybackEnd = function() {
-            if (this._onPlaybackEnd) {
-                const resolve = this._onPlaybackEnd;
-                this._onPlaybackEnd = null;
-                this._playbackPromise = null;
-                resolve();
-            }
-        };
-
-        FlowAnimator.prototype.pause = function() {
-            this.isPlaying = false;
-            this._resolvePlaybackEnd();
-        };
-
-        FlowAnimator.prototype.reset = function() {
-            this.isPlaying = false;
-            this.animationProgress = 0;
-            this.renderAnimationFrame();
-            this.timeline.updatePlayhead();
-            this.updateTimeDisplay();
-            this._resolvePlaybackEnd();
-        };
-
-        FlowAnimator.prototype.animate = function() {
-            if (!this.isPlaying) return;
-
-            const now = Date.now();
-            const elapsed = (now - this.animationStartTime) * this.animationSpeed / 1000;
-            this.animationProgress = elapsed / this.totalAnimationTime;
-
-            if (this.animationProgress >= 1) {
-                this.animationProgress = 1;
-                this.isPlaying = false;
-
-                if (this.isRecording) {
-                    setTimeout(() => this.stopRecording(), 500);
-                }
-            }
-
-            this.renderAnimationFrame();
-            this.timeline.updatePlayhead();
-            this.updateTimeDisplay();
-
-            if (this.isPlaying) {
-                requestAnimationFrame(() => this.animate());
-            } else {
-                this._resolvePlaybackEnd();
-            }
-        };
-
-        // ─── Crop Region ─────────────────────────────────────────────────────────
-        FlowAnimator.prototype.initCropOverlay = function() {
-            this._cropCanvas = document.getElementById('cropOverlay');
-            this._cropCtx    = this._cropCanvas.getContext('2d');
-            this._syncCropCanvas();
-            this.bindCropEvents();
-        };
-
-        FlowAnimator.prototype._syncCropCanvas = function() {
-            this._cropCanvas.width  = this.canvas.width;
-            this._cropCanvas.height = this.canvas.height;
-            this._cropCanvas.style.width    = this.canvas.style.width  || this.canvas.width  + 'px';
-            this._cropCanvas.style.height   = this.canvas.style.height || this.canvas.height + 'px';
-            this._cropCanvas.style.position = 'absolute';
-            this._cropCanvas.style.top  = '0';
-            this._cropCanvas.style.left = '0';
-            this.drawCropOverlay();
-        };
-
-        FlowAnimator.prototype.enterCropMode = function() {
-            this.mode = 'crop';
-            this._cropCanvas.style.pointerEvents = 'auto';
-            this._cropCanvas.style.cursor = 'crosshair';
-            document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-            this.hideCursorPreview();
-            this.showTooltip('✂️ Arraste para selecionar a região de gravação | ESC cancela');
-        };
-
-        FlowAnimator.prototype.exitCropMode = function() {
-            if (this.mode !== 'crop') return;
-            this.mode = 'draw';
-            document.querySelector('[data-mode="draw"]').classList.add('active');
-            this._cropCanvas.style.pointerEvents = 'none';
-            this._cropCanvas.style.cursor = 'default';
-            this.updateCursor();
-        };
-
-        FlowAnimator.prototype.drawCropOverlay = function() {
-            if (!this._cropCtx) return;
-            const ctx = this._cropCtx;
-            const cw  = this._cropCanvas.width;
-            const ch  = this._cropCanvas.height;
-            ctx.clearRect(0, 0, cw, ch);
-
-            const r = this._cropPreview || this.cropRegion;
-            if (!r || r.w < 2 || r.h < 2) return;
-
-            // Escurecer tudo fora da região
-            ctx.fillStyle = 'rgba(0,0,0,0.52)';
-            ctx.fillRect(0, 0, cw, ch);
-            ctx.clearRect(r.x, r.y, r.w, r.h);
-
-            // Borda tracejada verde
-            ctx.strokeStyle = '#27ae60';
-            ctx.lineWidth   = 2;
-            ctx.setLineDash([7, 4]);
-            ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
-            ctx.setLineDash([]);
-
-            // Handles de canto
-            const hs = 9;
-            ctx.fillStyle = '#27ae60';
-            [[r.x, r.y],[r.x+r.w, r.y],[r.x, r.y+r.h],[r.x+r.w, r.y+r.h]].forEach(([hx, hy]) => {
-                ctx.fillRect(hx - hs/2, hy - hs/2, hs, hs);
-            });
-
-            // Label de dimensões
-            const label = `${Math.round(r.w)} × ${Math.round(r.h)} px`;
-            ctx.font = 'bold 13px monospace';
-            const lw = ctx.measureText(label).width + 14;
-            const lx = Math.max(0, Math.min(r.x, cw - lw - 4));
-            const ly = r.y > 26 ? r.y - 6 : r.y + r.h + 20;
-            ctx.fillStyle = 'rgba(39,174,96,0.92)';
-            ctx.beginPath();
-            ctx.roundRect(lx - 2, ly - 16, lw, 20, 4);
-            ctx.fill();
-            ctx.fillStyle = '#fff';
-            ctx.fillText(label, lx + 5, ly);
-        };
-
-        FlowAnimator.prototype.bindCropEvents = function() {
-            const cc   = this._cropCanvas;
-            const self = this;
-
-            const pos = (e) => {
-                const rect = cc.getBoundingClientRect();
-                return {
-                    x: (e.clientX - rect.left)  * (cc.width  / rect.width),
-                    y: (e.clientY - rect.top)    * (cc.height / rect.height)
-                };
-            };
-
-            cc.addEventListener('mousedown', (e) => {
-                if (self.mode !== 'crop') return;
-                self._cropDragging = true;
-                self._cropStart    = pos(e);
-                self._cropPreview  = null;
-                e.preventDefault();
-            });
-
-            cc.addEventListener('mousemove', (e) => {
-                if (!self._cropDragging) return;
-                const p = pos(e);
-                self._cropPreview = {
-                    x: Math.min(self._cropStart.x, p.x),
-                    y: Math.min(self._cropStart.y, p.y),
-                    w: Math.abs(p.x - self._cropStart.x),
-                    h: Math.abs(p.y - self._cropStart.y)
-                };
-                self.drawCropOverlay();
-            });
-
-            cc.addEventListener('mouseup', (e) => {
-                if (!self._cropDragging) return;
-                self._cropDragging = false;
-                const r = self._cropPreview;
-                if (r && r.w > 10 && r.h > 10) {
-                    self.cropRegion   = { ...r };
-                    self._cropPreview = null;
-                    self.drawCropOverlay();
-                    self.updateCropIndicator();
-                    self.showTooltip(`✂️ Região: ${Math.round(r.w)}×${Math.round(r.h)}px — pronto para exportar!`);
+                    line = word;
                 } else {
-                    self._cropPreview = null;
-                    self.drawCropOverlay();
-                }
-                self.exitCropMode();
-            });
-        };
-
-        FlowAnimator.prototype.clearCropRegion = function() {
-            this.cropRegion   = null;
-            this._cropPreview = null;
-            this.drawCropOverlay();
-            document.getElementById('cropIndicator').classList.remove('show');
-            this.showTooltip('Região de gravação removida — exporta o canvas completo');
-        };
-
-        FlowAnimator.prototype.updateCropIndicator = function() {
-            if (!this.cropRegion) return;
-            const r = this.cropRegion;
-            document.getElementById('cropInfo').textContent =
-                `${Math.round(r.w)} × ${Math.round(r.h)} px`;
-            document.getElementById('cropIndicator').classList.add('show');
-        };
-        // ─────────────────────────────────────────────────────────────────────────
-
-        // ─── Undo / Redo ────────────────────────────────────────────────────────
-        // "points" nunca é mutado in-place (só reatribuído em optimizePerformance), então os snapshots
-        // abaixo compartilham os arrays de pontos por referência em vez de cloná-los a cada ação.
-        FlowAnimator.prototype.saveUndoState = function() {
-            this._undoStack.push({
-                actions: this.actions.map(a => Object.assign({}, a)),
-                comments: this.comments.map(c => Object.assign({}, c))
-            });
-            if (this._undoStack.length > 30) this._undoStack.shift(); // limite de histórico
-            this._redoStack = []; // nova ação invalida redo
-        };
-
-        FlowAnimator.prototype.undo = function() {
-            if (this._undoStack.length === 0) { this.showTooltip('Nada para desfazer.'); return; }
-            // Guardar estado atual em redo
-            this._redoStack.push({
-                actions: this.actions.map(a => Object.assign({}, a)),
-                comments: this.comments.map(c => Object.assign({}, c))
-            });
-            const prev = this._undoStack.pop();
-            this.actions = prev.actions;
-            this.comments = prev.comments;
-            this.rebuildDrawingCanvas();
-            this.redrawMainCanvas();
-            this.timeline.refresh();
-            this.updateInfo();
-            this.showTooltip('↩ Desfeito');
-        };
-
-        FlowAnimator.prototype.redo = function() {
-            if (this._redoStack.length === 0) { this.showTooltip('Nada para refazer.'); return; }
-            this._undoStack.push({
-                actions: this.actions.map(a => Object.assign({}, a)),
-                comments: this.comments.map(c => Object.assign({}, c))
-            });
-            const next = this._redoStack.pop();
-            this.actions = next.actions;
-            this.comments = next.comments;
-            this.rebuildDrawingCanvas();
-            this.redrawMainCanvas();
-            this.timeline.refresh();
-            this.updateInfo();
-            this.showTooltip('↪ Refeito');
-        };
-        // ────────────────────────────────────────────────────────────────────────
-
-        // Utilitário: formatar segundos em MM:SS
-        FlowAnimator.prototype.formatTime = function(seconds) {
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-        };
-
-        FlowAnimator.prototype.updateTimeDisplay = function() {
-            const current = this.animationProgress * this.totalAnimationTime;
-            const total = this.totalAnimationTime;
-            document.getElementById('timeDisplay').textContent =
-                `${this.formatTime(current)} / ${this.formatTime(total)}`;
-            this.updateCurrentTimeDisplay();
-        };
-
-        FlowAnimator.prototype.updateInfo = function() {
-            let drawCount = 0, eraseCount = 0;
-
-            for (let action of this.actions) {
-                if (action.type === 'draw') drawCount++;
-                else if (action.type === 'erase') eraseCount++;
-            }
-
-            document.getElementById('drawCount').textContent = drawCount;
-            document.getElementById('eraseCount').textContent = eraseCount;
-            document.getElementById('commentCount').textContent = this.comments.length;
-            // "Fim do conteúdo": quando a última ação/comentário termina (antes somava as
-            // durações, o que não corresponde a nada visível quando há ações paralelas)
-            document.getElementById('realDuration').textContent = this._lastContentEnd().toFixed(1) + 's';
-        };
-
-        // NOVA FUNÇÃO: Reconstruir canvas de desenho - CORRIGIDO
-        FlowAnimator.prototype.rebuildDrawingCanvas = function() {
-            // Toda reconstrução implica que actions mudou — invalida o cache da animação
-            this.invalidateRenderCaches();
-
-            // Limpar APENAS o canvas de desenho (não o principal)
-            this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
-
-            // Replay de draw + erase em ordem cronológica para manter estado correto
-            const sorted = this.actions.slice().sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
-            for (let action of sorted) {
-                if (!this._isTypeVisible(action.type)) continue;
-                if (action.type === 'draw') {
-                    this.drawPathOnContext(this.drawingCtx, action.points, action.color, action.width);
-                } else if (action.type === 'erase') {
-                    this.erasePathOnContext(this.drawingCtx, action.points, action.size);
+                    line = candidate;
                 }
             }
-
-            // Após mutar o conteúdo, reancora a agulha de gravação (se ociosa no modo).
-            this._syncRecordNeedle();
-        };
-
-        // NOVA FUNÇÃO: Redesenhar canvas principal - CORRIGIDO para preservar fundo
-        FlowAnimator.prototype.redrawMainCanvas = function() {
-            // Limpar canvas principal
-            this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-
-            // SEMPRE desenhar imagem de fundo PRIMEIRO (se existir)
-            this._drawBackground(this.ctx);
-
-            // Desenhar canvas de desenho sobre o fundo (sem afetar o fundo)
-            this.ctx.drawImage(this.drawingCanvas, 0, 0);
-
-            // Desenhar comentários por último (respeitando visibilidade da track)
-            if (this._isTypeVisible('comment')) {
-                this.drawComments();
-            }
-        };
-
-        FlowAnimator.prototype.redrawWithCurrentPath = function() {
-            this.redrawMainCanvas();
-
-            if (this.currentPath.length === 0) return;
-
-            if (this.isDrawingStraightLine && this.currentPath.length >= 2) {
-                const p0  = this.currentPath[0];
-                const p1  = this.currentPath[this.currentPath.length - 1];
-                const ctx = this.ctx;
-                const isSnap = this.isShiftPressed;
-
-                ctx.save();
-                // Linha principal (sólida com leve alpha — confirma quando soltar)
-                ctx.strokeStyle = this.flowColor;
-                ctx.lineWidth   = this.lineWidth;
-                ctx.lineCap     = 'round';
-                ctx.globalAlpha = 0.75;
-                ctx.beginPath();
-                ctx.moveTo(p0.x, p0.y);
-                ctx.lineTo(p1.x, p1.y);
-                ctx.stroke();
-
-                // Círculo de origem
-                ctx.globalAlpha = 1;
-                ctx.fillStyle   = this.flowColor;
-                ctx.beginPath();
-                ctx.arc(p0.x, p0.y, this.lineWidth * 1.2, 0, Math.PI * 2);
-                ctx.fill();
-
-                // Círculo de destino (pulsante para snap)
-                ctx.beginPath();
-                ctx.arc(p1.x, p1.y, this.lineWidth * 1.2, 0, Math.PI * 2);
-                ctx.strokeStyle = isSnap ? '#27ae60' : this.flowColor;
-                ctx.lineWidth   = 2;
-                ctx.setLineDash([]);
-                ctx.stroke();
-
-                // Badge de ângulo ao lado do cursor
-                const snapDeg = this._lastSnapAngle;
-                const freeDeg = this._lastFreeAngle;
-                const deg = isSnap ? snapDeg : freeDeg;
-                if (deg != null) {
-                    const label = deg + '°';
-                    ctx.font        = 'bold 13px monospace';
-                    const tw        = ctx.measureText(label).width + 12;
-                    const bx        = p1.x + 14;
-                    const by        = p1.y - 10;
-                    ctx.fillStyle   = isSnap ? 'rgba(39,174,96,0.92)' : 'rgba(74,144,226,0.92)';
-                    ctx.beginPath();
-                    ctx.roundRect(bx, by - 14, tw, 18, 5);
-                    ctx.fill();
-                    ctx.fillStyle   = '#fff';
-                    ctx.globalAlpha = 1;
-                    ctx.fillText(label, bx + 6, by);
-                }
-
-                ctx.restore();
-            } else {
-                this.drawPath(this.currentPath, this.flowColor, this.lineWidth, 1);
-            }
-        };
-
-        FlowAnimator.prototype.drawPathOnContext = function(ctx, points, color, width) {
-            if (!points || points.length < 1) return;
-            
-            ctx.save();
-            ctx.strokeStyle = color;
-            ctx.lineWidth = width;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            
-            if (points.length === 1) {
-                // Single point
-                ctx.beginPath();
-                ctx.arc(points[0].x, points[0].y, width / 2, 0, Math.PI * 2);
-                ctx.fillStyle = color;
-                ctx.fill();
-            } else {
-                // Multiple points
-                ctx.beginPath();
-                ctx.moveTo(points[0].x, points[0].y);
-                for (let i = 1; i < points.length; i++) {
-                    ctx.lineTo(points[i].x, points[i].y);
-                }
-                ctx.stroke();
-            }
-            
-            ctx.restore();
-        };
-
-        // Apagador estático para rebuild do canvas de desenho
-        FlowAnimator.prototype.erasePathOnContext = function(ctx, points, size) {
-            if (!points || points.length < 1) return;
-            ctx.save();
-            ctx.globalCompositeOperation = 'destination-out';
-            ctx.strokeStyle = 'rgba(0,0,0,1)';
-            ctx.lineWidth = size;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            if (points.length === 1) {
-                ctx.beginPath();
-                ctx.arc(points[0].x, points[0].y, size / 2, 0, Math.PI * 2);
-                ctx.fill();
-            } else {
-                ctx.beginPath();
-                ctx.moveTo(points[0].x, points[0].y);
-                for (let i = 1; i < points.length; i++) {
-                    ctx.lineTo(points[i].x, points[i].y);
-                }
-                ctx.stroke();
-            }
-            ctx.restore();
-        };
-
-        // Clear - CORRIGIDO
-        FlowAnimator.prototype.clear = async function() {
-            const hadContent = this.actions.length > 0 || this.comments.length > 0;
-            if (hadContent) {
-                if (!(await showConfirm('Limpar todas as ações e comentários?'))) return;
-                // Snapshot ANTES de limpar: "Limpar Tudo" (e a troca de página, que o reutiliza)
-                // passa a ser desfazível com Ctrl+Z em vez de perder o trabalho de vez.
-                this.saveUndoState();
-            }
-
-            this.actions = [];
-            this.comments = [];
-            this.currentPath = [];
-            this.isPlaying = false;
-            this.animationProgress = 0;
-            
-            this.rebuildDrawingCanvas();
-            this.redrawMainCanvas();
-            this.timeline.refresh();
-            this.updateInfo();
-            this.updateTimeDisplay();
-            if (hadContent) this.showTooltip('🗑️ Tudo limpo — Ctrl+Z desfaz');
-        };
-
-        // NOVA FUNÇÃO: Adicionar controles de tempo na interface
-        FlowAnimator.prototype.addTimeControls = function() {
-            // Botão para posicionar no tempo atual
-            const timeControlsHTML = `
-                <div style="margin: 10px 0; padding: 10px; background: #2a2a2a; border-radius: 4px; border: 1px solid #3a3a3a;">
-                    <div style="font-size: 12px; color: #aaa; margin-bottom: 5px;">⏱️ Controles de Tempo</div>
-                    <div style="display: flex; gap: 5px; align-items: center;">
-                        <button class="btn btn-primary btn-icon" id="setCurrentTimeBtn" title="Usar tempo atual">📍</button>
-                        <span style="color: #4a90e2; font-family: monospace; font-size: 12px;" id="currentTimeDisplay">00:00</span>
-                        <button class="btn btn-warning btn-icon" id="goToTimeBtn" title="Ir para tempo específico">⏰</button>
-                    </div>
-                </div>
-            `;
-            
-            // Adicionar depois do campo de tempo de aparição
-            const commentTimeGroup = document.getElementById('commentTime').closest('.form-group');
-            commentTimeGroup.insertAdjacentHTML('afterend', timeControlsHTML);
-            
-            // Event listeners
-            document.getElementById('setCurrentTimeBtn').addEventListener('click', () => {
-                const currentTime = this.animationProgress * this.totalAnimationTime;
-                document.getElementById('commentTime').value = currentTime.toFixed(1);
-                this.showTooltip(`⏱️ Tempo definido para ${currentTime.toFixed(1)}s`);
-            });
-            
-            document.getElementById('goToTimeBtn').addEventListener('click', async () => {
-                const time = await showPromptModal('Ir para qual tempo (segundos)?', '0');
-                if (time !== null && !isNaN(time)) {
-                    const targetTime = parseFloat(time);
-                    this.animationProgress = Math.max(0, Math.min(1, targetTime / this.totalAnimationTime));
-                    this.renderAnimationFrame();
-                    this.timeline.updatePlayhead();
-                    this.updateTimeDisplay();
-                    this.showTooltip(`⏰ Posicionado em ${targetTime.toFixed(1)}s`);
-                }
-            });
-            
-            // Atualizar display do tempo atual
-            this.updateCurrentTimeDisplay();
-        };
-
-        FlowAnimator.prototype.updateCurrentTimeDisplay = function() {
-            const display = document.getElementById('currentTimeDisplay');
-            if (display) {
-                const currentTime = this.animationProgress * this.totalAnimationTime;
-                display.textContent = this.formatTime(currentTime);
-            }
-        };
-
-        // Tempo (s) em que o último conteúdo (ação ou comentário) termina. Serve de
-        // ponto de partida do cursor de gravação para não sobrescrever o que já existe.
-        FlowAnimator.prototype._lastContentEnd = function() {
-            let end = 0;
-            for (const a of this.actions) {
-                end = Math.max(end, (a.startTime || 0) + (a.duration || 0));
-            }
-            for (const c of this.comments) {
-                end = Math.max(end, (c.time || 0) + (c.duration || 0));
-            }
-            return end;
-        };
-
-        // Onde o próximo traço gravado deve começar: logo após o conteúdo existente, mas
-        // nunca antes do piso escolhido ao entrar no modo (_recordFloor). É DERIVADO do
-        // conteúdo real em vez de um contador que só cresce — assim undo/redo, deleção de
-        // item e "limpar" reposicionam o início sozinhos. Sem isso, remover o último traço
-        // e desenhar de novo deixaria um espaço vazio (o próximo começava após o traço já
-        // apagado) e podia estender exports com tempo em branco.
-        FlowAnimator.prototype._nextRecordStart = function() {
-            return Math.max(this._lastContentEnd(), this._recordFloor || 0);
-        };
-
-        // Posiciona a agulha (animationProgress) num tempo absoluto em segundos, sem tocar
-        // no canvas — só move o playhead da timeline e atualiza os displays de tempo.
-        FlowAnimator.prototype._seekNeedle = function(seconds) {
-            const clamped = Math.max(0, Math.min(seconds, this.totalAnimationTime));
-            this.animationProgress = this.totalAnimationTime > 0 ? clamped / this.totalAnimationTime : 0;
-            this.timeline.updatePlayhead();
-            this.updateTimeDisplay();
-        };
-
-        // Relógio de gravação: um loop de rAF que faz a agulha correr em tempo real
-        // (1 s de relógio = 1 s na timeline) enquanto o usuário está desenhando um traço.
-        // Só move o playhead — nunca re-renderiza o canvas — então convive sem conflito
-        // com o desenho ao vivo (redrawWithCurrentPath). O loop se auto-encerra assim que
-        // o traço termina (`isDrawing` vira false): fora do traço a agulha fica PARADA no
-        // ponto onde o próximo traço vai começar, em vez de avançar sozinha durante a pausa.
-        // `baseSeconds` é a posição da agulha no início do traço.
-        FlowAnimator.prototype._startRecordClock = function(baseSeconds) {
-            this._recordBase = baseSeconds;
-            this._recordClockRef = Date.now();
-            if (this._recordRAF) cancelAnimationFrame(this._recordRAF);
-
-            const tick = () => {
-                this._recordRAF = null;
-                // Só avança durante um traço ativo; o play() (se rodando) é dono da agulha.
-                if (!this.timelineMode || this.isPlaying || !this.isDrawing) return;
-                const elapsed = (Date.now() - this._recordClockRef) / 1000;
-                this._seekNeedle(this._recordBase + elapsed);
-                this._recordRAF = requestAnimationFrame(tick);
-            };
-            this._recordRAF = requestAnimationFrame(tick);
-        };
-
-        FlowAnimator.prototype._stopRecordClock = function() {
-            if (this._recordRAF) cancelAnimationFrame(this._recordRAF);
-            this._recordRAF = null;
-        };
-
-        // Em modo gravação e ocioso, a agulha marca visualmente onde o PRÓXIMO traço vai
-        // começar. Após qualquer mutação de conteúdo (undo/redo, deleção/arraste de item
-        // na timeline, "limpar"), reancora a agulha em _nextRecordStart() — senão ela
-        // ficaria presa no fim de um traço que já foi apagado até o próximo mousedown.
-        // Chamado de rebuildDrawingCanvas(), que roda em todo caminho de mutação; o guard
-        // garante que não interfira durante um traço ativo nem durante o play().
-        FlowAnimator.prototype._syncRecordNeedle = function() {
-            if (this.timelineMode && !this.isDrawing && !this.isPlaying) {
-                this._recordCursor = this._nextRecordStart();
-                this._seekNeedle(this._recordCursor);
-            }
-        };
-
-        // Modo Timeline = modo de GRAVAÇÃO: ao ativar, um relógio começa a correr e a
-        // agulha de edição anda. Cada traço desenhado é gravado sequencialmente, logo
-        // após o fim do anterior (ver startDrawing/stopDrawing) — pausas para pensar não
-        // viram espaços vazios na reprodução.
-        FlowAnimator.prototype.enterTimelineMode = function() {
-            this.timelineMode = true;
-            document.body.classList.add('timeline-mode');
-
-            // Piso do cursor = SÓ o offset do playhead escolhido pelo usuário. O fim do
-            // conteúdo existente NÃO é gravado aqui (senão limpar/deletar esse conteúdo
-            // dentro do modo deixaria um piso obsoleto e reabriria o vão) — ele entra
-            // dinamicamente via _lastContentEnd() dentro de _nextRecordStart().
-            this._recordFloor = this.animationProgress * this.totalAnimationTime;
-            // Agulha começa após o conteúdo existente (ou no offset, o que for maior) e
-            // fica PARADA ali — o relógio só corre enquanto um traço está sendo desenhado
-            // (ver startDrawing), então a agulha não avança sozinha durante a pausa.
-            this._recordCursor = this._nextRecordStart();
-            this._seekNeedle(this._recordCursor);
-
-            // Mostrar overlay com instruções
-            const overlay = document.createElement('div');
-            overlay.id = 'timelineModeOverlay';
-            overlay.style.cssText = `
-                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-                background: rgba(79, 172, 254, 0.1); z-index: 1000;
-                pointer-events: none; border: 3px solid #4facfe;
-            `;
-
-            const instructions = document.createElement('div');
-            instructions.style.cssText = `
-                position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
-                background: rgba(79, 172, 254, 0.95); color: white; padding: 15px 25px;
-                border-radius: 25px; font-size: 14px; font-weight: 600;
-                box-shadow: 0 4px 15px rgba(79, 172, 254, 0.4);
-                animation: pulse 2s infinite;
-            `;
-            instructions.textContent = '🎬 GRAVAÇÃO ATIVA — desenhe: cada traço entra logo após o anterior; a agulha marca o tempo';
-
-            document.body.appendChild(overlay);
-            document.body.appendChild(instructions);
-
-            // Auto-remove após 5 segundos
-            setTimeout(() => {
-                if (document.getElementById('timelineModeOverlay')) {
-                    document.body.removeChild(overlay);
-                    document.body.removeChild(instructions);
-                }
-            }, 5000);
-        };
-
-        // NOVA FUNÇÃO: Sair do modo timeline
-        FlowAnimator.prototype.exitTimelineMode = function() {
-            this.timelineMode = false;
-            this._stopRecordClock();
-            document.body.classList.remove('timeline-mode');
-
-            const overlay = document.getElementById('timelineModeOverlay');
-            if (overlay) {
-                document.body.removeChild(overlay);
-            }
-        };
-
-        // Zoom
-        FlowAnimator.prototype.zoomIn = function() {
-            this.displayScale = Math.min(3, this.displayScale * 1.2);
-            this.updateCanvasDisplay();
-        };
-
-        FlowAnimator.prototype.zoomOut = function() {
-            this.displayScale = Math.max(0.1, this.displayScale / 1.2);
-            this.updateCanvasDisplay();
-        };
-
-        FlowAnimator.prototype.fitToScreen = function() {
-            // Mede a área visível (viewport), não o wrapper — o wrapper encolhe/estica com o
-            // próprio canvas e dava uma escala errada antes do primeiro ajuste.
-            const viewport = document.querySelector('.canvas-viewport');
-            const availW = viewport.clientWidth - 40;
-            const availH = viewport.clientHeight - 40;
-            if (availW <= 0 || availH <= 0) return;
-            
-            const scaleX = availW / this.canvas.width;
-            const scaleY = availH / this.canvas.height;
-            
-            this.displayScale = Math.min(scaleX, scaleY);
-            this.updateCanvasDisplay();
-            this.centerCanvas();
-        };
-
-        FlowAnimator.prototype.centerCanvas = function() {
-            const wrapper = document.getElementById('canvasWrapper');
-            const canvas = this.canvas;
-            
-            wrapper.scrollLeft = (canvas.offsetWidth - wrapper.clientWidth) / 2;
-            wrapper.scrollTop = (canvas.offsetHeight - wrapper.clientHeight) / 2;
-        };
-
-        FlowAnimator.prototype.updateCanvasDisplay = function() {
-            const w = (this.canvas.width  * this.displayScale) + 'px';
-            const h = (this.canvas.height * this.displayScale) + 'px';
-            this.canvas.style.width  = w;
-            this.canvas.style.height = h;
-            // Sincronizar overlay de crop com o mesmo tamanho visual
-            if (this._cropCanvas) {
-                this._cropCanvas.style.width  = w;
-                this._cropCanvas.style.height = h;
-            }
-            this.updateCanvasInfo();
-        };
-
-        // PDF/Image Loading
-        FlowAnimator.prototype.loadPDF = function(file) {
-            const self = this;
-            document.getElementById('fileName').textContent = 'Carregando PDF...';
-            
-            file.arrayBuffer().then(arrayBuffer => {
-                return pdfjsLib.getDocument({
-                    data: arrayBuffer,
-                    // CVE-2024-4367: no PDF.js < 4.2.67, com isEvalSupported=true (padrão) um PDF
-                    // malicioso consegue executar JavaScript na origem do app. Desligar o eval
-                    // fecha o vetor sem precisar migrar para o PDF.js 4+ (que é só ES module).
-                    isEvalSupported: false,
-                    // cMaps (fontes CJK) são buscados via fetch, que o Chrome bloqueia em file:// —
-                    // nesse caso usa a CDN; servido por HTTP(S) usa a cópia vendorizada.
-                    cMapUrl: location.protocol === 'file:'
-                        ? 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/'
-                        : 'vendor/pdfjs/cmaps/',
-                    cMapPacked: true
-                }).promise;
-            }).then(pdf => {
-                self.pdfDoc = pdf;
-                self.isImage = false;
-                
-                // Setup page selector
-                const pageSelect = document.getElementById('pageSelect');
-                pageSelect.innerHTML = '';
-                for (let i = 1; i <= pdf.numPages; i++) {
-                    const option = document.createElement('option');
-                    option.value = i;
-                    option.textContent = `Página ${i}`;
-                    pageSelect.appendChild(option);
-                }
-                
-                document.getElementById('pageSelector').style.display = 'flex';
-                document.getElementById('fileName').textContent = file.name;
-                
-                return self.loadPage(1);
-            }).catch(error => {
-                console.error('Erro ao carregar PDF:', error);
-                self.handleError('Erro ao carregar PDF', error);
-                self.showTooltip('Erro ao carregar PDF!');
-            });
-        };
-
-        FlowAnimator.prototype.loadImage = function(file) {
-            const self = this;
-            const reader = new FileReader();
-            
-            reader.onload = function(e) {
-                const img = new Image();
-                img.onload = function() {
-                    self.isImage = true;
-                    self.imageData = img;
-                    self.pdfDoc = null;
-                    
-                    // Hide page selector
-                    document.getElementById('pageSelector').style.display = 'none';
-                    document.getElementById('fileName').textContent = file.name;
-                    
-                    self.renderImage();
-                };
-                img.onerror = function() {
-                    self.handleError('Erro ao carregar imagem', new Error('Falha ao carregar imagem'));
-                    self.showTooltip('Erro ao carregar imagem!');
-                };
-                img.src = e.target.result;
-            };
-            
-            reader.onerror = function() {
-                self.handleError('Erro ao ler arquivo', new Error('Falha ao ler arquivo'));
-                self.showTooltip('Erro ao ler arquivo!');
-            };
-            
-            reader.readAsDataURL(file);
-        };
-
-        // CORRIGIDO: Função loadPage única e sem conflitos
-        FlowAnimator.prototype.loadPage = function(pageNumber) {
-            if (!this.pdfDoc) {
-                this.showTooltip('Nenhum PDF carregado!');
-                return Promise.resolve();
-            }
-            
-            if (pageNumber < 1 || pageNumber > this.pdfDoc.numPages) {
-                this.showTooltip(`Página ${pageNumber} não existe! PDF tem ${this.pdfDoc.numPages} páginas.`);
-                return Promise.resolve();
-            }
-            
-            const self = this;
-            document.getElementById('fileName').textContent = `Carregando página ${pageNumber}...`;
-            
-            return this.pdfDoc.getPage(pageNumber).then(async page => {
-                self.pdfPage = page;
-
-                // Perguntar se deve limpar ações existentes
-                if (self.actions.length > 0 || self.comments.length > 0) {
-                    const shouldClear = await showConfirm(
-                        `Você tem ${self.actions.length} ações e ${self.comments.length} comentários.\n\n` +
-                        `Deseja limpar tudo ao trocar de página?\n\n` +
-                        `• SIM: Limpa tudo e inicia nova página\n` +
-                        `• NÃO: Mantém as ações (pode sobrepor)`
-                    );
-
-                    if (shouldClear) {
-                        await self.clear();
-                    }
-                }
-                
-                return self.renderPage().then(() => {
-                    // Atualizar o seletor para mostrar a página correta
-                    document.getElementById('pageSelect').value = pageNumber;
-                    document.getElementById('fileName').textContent = 
-                        `${self.pdfDoc._pdfInfo?.title || 'PDF'} - Página ${pageNumber}/${self.pdfDoc.numPages}`;
-                    
-                    self.showTooltip(`📄 Página ${pageNumber} carregada com sucesso!`);
-                });
-            }).catch(error => {
-                self.handleError('Erro ao carregar página', error);
-                self.showTooltip(`Erro ao carregar página ${pageNumber}!`);
-                document.getElementById('fileName').textContent = 'Erro ao carregar página';
-                throw error; // Re-lançar o erro para manter o comportamento da Promise
-            });
-        };
-
-        FlowAnimator.prototype.renderPage = function() {
-            if (!this.pdfPage) return Promise.resolve();
-            
-            try {
-                const viewport = this.pdfPage.getViewport({ scale: 2 });
-                this._syncCanvasSizes(viewport.width, viewport.height);
-
-                const renderContext = {
-                    canvasContext: this.ctx,
-                    viewport: viewport
-                };
-
-                return this.pdfPage.render(renderContext).promise.then(() => {
-                    this._setBackgroundFromImageData(this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height));
-                    this.displayScale = 1;
-                    this.updateCanvasDisplay();
-                    this.fitToScreen();
-                    this.updateCanvasInfo();
-                });
-            } catch (error) {
-                this.handleError('Erro ao renderizar página', error);
-                this.showTooltip('Erro ao renderizar página!');
-                return Promise.reject(error);
-            }
-        };
-
-        FlowAnimator.prototype.renderImage = function() {
-            try {
-                // Set canvas size to image size (with max limits)
-                const maxWidth = 1920;
-                const maxHeight = 1080;
-                const scaleX = maxWidth / this.imageData.naturalWidth;
-                const scaleY = maxHeight / this.imageData.naturalHeight;
-                const scale = Math.min(1, scaleX, scaleY);
-                
-                this._syncCanvasSizes(this.imageData.naturalWidth * scale, this.imageData.naturalHeight * scale);
-
-                // Draw image
-                this.ctx.drawImage(this.imageData, 0, 0, this.canvas.width, this.canvas.height);
-
-                // Save image data
-                this._setBackgroundFromImageData(this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height));
-
-                this.displayScale = 1;
-                this.updateCanvasDisplay();
-                this.fitToScreen();
-                this.updateCanvasInfo();
-                // Redesenhar após carregar imagem
-                this.rebuildDrawingCanvas();
-                this.redrawMainCanvas();
-            } catch (error) {
-                this.handleError('Erro ao renderizar imagem', error);
-                this.showTooltip('Erro ao renderizar imagem!');
-            }
-        };
-
-        // Export Video HD - FUNÇÃO COMPLETA
-        FlowAnimator.prototype.exportVideoHD = function() {
-            if (this.isRecording) {
-                this.showTooltip('Já existe uma gravação em andamento!');
-                return;
-            }
-            if (this.actions.length === 0 && this.comments.length === 0) {
-                this.showTooltip('Adicione algumas ações primeiro!');
-                return;
-            }
-            
-            // Verificar suporte do navegador
-            if (!window.MediaRecorder) {
-                this.showTooltip('Seu navegador não suporta gravação de vídeo. Use exportação de frames.');
-                document.getElementById('exportFramesBtn').style.display = 'inline-block';
-                return;
-            }
-            
-            const self = this;
-            
-            // Mostrar progress bar
-            const progressBar = document.getElementById('progressBar');
-            const progressFillBar = document.getElementById('progressFillBar');
-            const progressText = document.getElementById('progressText');
-            progressBar.style.display = 'block';
-            progressFillBar.style.width = '0%';
-            progressText.textContent = '0%';
-            
-            try {
-                // Região de source (crop) — usa canvas inteiro se não houver seleção
-                const crop = this.cropRegion;
-                const srcX = crop ? Math.round(crop.x) : 0;
-                const srcY = crop ? Math.round(crop.y) : 0;
-                const srcW = crop ? Math.round(crop.w) : this.canvas.width;
-                const srcH = crop ? Math.round(crop.h) : this.canvas.height;
-
-                // Resolução de saída: manter aspect ratio da região em 1920×1080
-                const aspect  = srcW / srcH;
-                let outW = 1920, outH = 1080;
-                if (aspect > 16/9) { outH = Math.round(outW / aspect); }
-                else               { outW = Math.round(outH * aspect); }
-                // Arredondar para par (requisito de muitos codecs)
-                outW = outW % 2 === 0 ? outW : outW - 1;
-                outH = outH % 2 === 0 ? outH : outH - 1;
-
-                // Criar canvas HD para gravação
-                const hdCanvas = document.createElement('canvas');
-                hdCanvas.width  = outW;
-                hdCanvas.height = outH;
-                const hdCtx = hdCanvas.getContext('2d');
-
-                // Configurar stream
-                const stream = hdCanvas.captureStream(60); // 60 FPS
-                
-                // Configurar MediaRecorder com melhor compatibilidade.
-                // Tenta MP4/H.264 primeiro (suporte varia por navegador — nem todos oferecem),
-                // com fallback para a cadeia de WebM já existente.
-                let mimeType = 'video/mp4;codecs=avc1.42E01E';
-                if (!MediaRecorder.isTypeSupported(mimeType)) {
-                    mimeType = 'video/mp4';
-                    if (!MediaRecorder.isTypeSupported(mimeType)) {
-                        mimeType = 'video/webm;codecs=vp9';
-                        if (!MediaRecorder.isTypeSupported(mimeType)) {
-                            mimeType = 'video/webm;codecs=vp8';
-                            if (!MediaRecorder.isTypeSupported(mimeType)) {
-                                mimeType = 'video/webm';
-                            }
-                        }
-                    }
-                }
-                
-                this.mediaRecorder = new MediaRecorder(stream, {
-                    mimeType: mimeType,
-                    videoBitsPerSecond: 8000000 // 8 Mbps para boa qualidade
-                });
-                
-                this.recordingChunks = [];
-                
-                this.mediaRecorder.ondataavailable = function(e) {
-                    if (e.data.size > 0) {
-                        self.recordingChunks.push(e.data);
-                    }
-                };
-                
-                this.mediaRecorder.onstop = function() {
-                    try {
-                        const blob = new Blob(self.recordingChunks, { type: mimeType });
-                        self._downloadBlob(blob, 'animacao_HD_' + Date.now() + (mimeType.startsWith('video/mp4') ? '.mp4' : '.webm'));
-
-                        progressBar.style.display = 'none';
-                        self.showTooltip('Vídeo HD exportado com sucesso!');
-                    } catch (error) {
-                        self.handleError('Erro ao salvar vídeo', error);
-                        progressBar.style.display = 'none';
-                        self.showTooltip('Erro ao salvar vídeo!');
-                    }
-                };
-                
-                this.mediaRecorder.onerror = function(e) {
-                    self.handleError('Erro na gravação', e.error);
-                    progressBar.style.display = 'none';
-                    self.showTooltip('Erro na gravação de vídeo!');
-                };
-                
-                // Função para renderizar frame HD com crop
-                const renderHDFrame = () => {
-                    try {
-                        hdCtx.fillStyle = '#000';
-                        hdCtx.fillRect(0, 0, outW, outH);
-                        // drawImage com recorte: copia só a região selecionada e estica para outW×outH
-                        hdCtx.drawImage(self.canvas, srcX, srcY, srcW, srcH, 0, 0, outW, outH);
-                        
-                        const progress = self.animationProgress * 100;
-                        progressFillBar.style.width = progress + '%';
-                        progressText.textContent    = Math.round(progress) + '%';
-                    } catch (error) {
-                        console.error('Erro ao renderizar frame HD:', error);
-                    }
-                };
-                
-                this.isRecording = true;
-                this.mediaRecorder.start(100);
-                document.getElementById('recordingIndicator').style.display = 'block';
-
-                if (crop) {
-                    this.showTooltip(`🎬 Gravando região ${Math.round(srcW)}×${Math.round(srcH)}px → vídeo ${outW}×${outH}…`);
-                } else {
-                    this.showTooltip(`🎬 Gravando canvas completo → ${outW}×${outH}…`);
-                }
-                
-                // Reset e iniciar animação
-                this.reset();
-                
-                // Override do renderAnimationFrame temporariamente
-                const originalRender = this.renderAnimationFrame.bind(this);
-                this.renderAnimationFrame = () => {
-                    originalRender();
-                    renderHDFrame();
-                };
-                
-                // Iniciar animação após delay e aguardar o fim via Promise (sem polling)
-                setTimeout(async () => {
-                    await this.play();
-
-                    // Restaurar renderização original
-                    this.renderAnimationFrame = originalRender;
-
-                    // Parar gravação
-                    setTimeout(() => {
-                        if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
-                            this.mediaRecorder.stop();
-                        }
-                        this.isRecording = false;
-                        document.getElementById('recordingIndicator').style.display = 'none';
-                    }, 500);
-                }, 500);
-                
-            } catch (error) {
-                this.handleError('Erro ao inicializar gravação', error);
-                progressBar.style.display = 'none';
-                this.showTooltip('Erro ao inicializar gravação de vídeo!');
-                document.getElementById('exportFramesBtn').style.display = 'inline-block';
-            }
-        };
-
-        FlowAnimator.prototype.stopRecording = function() {
-            if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
-                this.mediaRecorder.stop();
-            }
-            this.isRecording = false;
-            document.getElementById('recordingIndicator').style.display = 'none';
-            document.getElementById('progressBar').style.display = 'none';
-        };
-
-        // Dispara o download de um blob. O revoke é adiado: revogar imediatamente
-        // após o click() pode abortar o download em alguns navegadores.
-        FlowAnimator.prototype._downloadBlob = function(blob, filename) {
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.click();
-            setTimeout(() => URL.revokeObjectURL(url), 10000);
-        };
-
-        // Export as Frames (Alternativa) — empacota todos os frames num único ZIP.
-        // Antes disparava um download por frame (30fps × 10s = 300 arquivos), o que os
-        // navegadores bloqueiam; agora o usuário recebe um único frames_*.zip.
-        FlowAnimator.prototype.exportAsFrames = async function() {
-            if (this.actions.length === 0 && this.comments.length === 0) {
-                this.showTooltip('Adicione algumas ações primeiro!');
-                return;
-            }
-
-            const progressBar = document.getElementById('progressBar');
-            const progressFillBar = document.getElementById('progressFillBar');
-            const progressText = document.getElementById('progressText');
-            progressBar.style.display = 'block';
-            progressFillBar.style.width = '0%';
-            progressText.textContent = 'Exportando frames...';
-
-            // Reset para início
-            this.reset();
-
-            const fps = 30;
-            const totalFrames = Math.max(1, Math.floor(this.totalAnimationTime * fps));
-            const zip = new ZipBuilder();
-
-            try {
-                for (let frame = 0; frame < totalFrames; frame++) {
-                    this.animationProgress = frame / totalFrames;
-                    this.renderAnimationFrame();
-
-                    const blob = await new Promise((resolve) => this.canvas.toBlob(resolve, 'image/png'));
-                    if (blob) {
-                        const bytes = new Uint8Array(await blob.arrayBuffer());
-                        zip.addFile('frame_' + String(frame).padStart(4, '0') + '.png', bytes);
-                    }
-
-                    progressFillBar.style.width = ((frame / totalFrames) * 100) + '%';
-                    progressText.textContent = `Frame ${frame + 1}/${totalFrames}`;
-
-                    // Cede a thread a cada lote para não travar a UI
-                    if (frame % 10 === 9) {
-                        await new Promise((r) => setTimeout(r, 0));
-                    }
-                }
-
-                this._downloadBlob(zip.build(), 'frames_' + Date.now() + '.zip');
-                progressBar.style.display = 'none';
-                this.showTooltip(`📦 ${totalFrames} frames exportados em um ZIP!`);
-            } catch (error) {
-                this.handleError('Erro ao exportar frames', error);
-                progressBar.style.display = 'none';
-                this.showTooltip('Erro ao exportar frames!');
-            }
-        };
-
-        // Save/Load Functions - COMPLETAS
-        FlowAnimator.prototype.checkLocalStorage = function() {
-            try {
-                const test = 'test';
-                localStorage.setItem(test, test);
-                localStorage.removeItem(test);
-                return true;
-            } catch(e) {
-                document.getElementById('saveBtn').style.display = 'none';
-                document.getElementById('loadBtn').style.display = 'none';
-                document.getElementById('sandboxNotice').style.display = 'block';
-                return false;
-            }
-        };
-
-        // Monta o objeto de projeto serializável (usado por salvar e exportar JSON).
-        // includeBackground: embute o PDF/imagem de fundo como PNG dataURL, deixando o
-        // projeto autocontido — reabrir o JSON restaura o fundo em vez de vir branco.
-        FlowAnimator.prototype._buildProjectData = function(includeBackground) {
-            const data = {
-                actions: this.actions,
-                // Remove campos de cache internos (_layout*) antes de serializar
-                comments: this.comments.map(c => {
-                    const clean = Object.assign({}, c);
-                    delete clean._layout;
-                    delete clean._layoutKey;
-                    return clean;
-                }),
-                settings: {
-                    animationSpeed: this.animationSpeed,
-                    totalAnimationTime: this.totalAnimationTime,
-                    persistPaths: this.persistPaths,
-                    flowColor: this.flowColor,
-                    lineWidth: this.lineWidth,
-                    eraseSize: this.eraseSize,
-                    commentTextColor: this.commentTextColor,
-                    commentBgColor: this.commentBgColor,
-                    commentBorderColor: this.commentBorderColor,
-                    commentFontFamily: this.commentFontFamily,
-                    commentFontSize: this.commentFontSize,
-                    commentOpacity: this.commentOpacity,
-                    canvasWidth: this.canvas.width,
-                    canvasHeight: this.canvas.height
-                },
-                timestamp: new Date().toISOString(),
-                version: '1.2'
-            };
-            if (includeBackground && this._bgCanvas) {
-                data.background = { dataUrl: this._bgCanvas.toDataURL('image/png') };
-            }
-            return data;
-        };
-
-        FlowAnimator.prototype.saveToLocalStorage = function() {
-            try {
-                localStorage.setItem('flowAnimatorData', JSON.stringify(this._buildProjectData(true)));
-                this.showTooltip('Dados salvos com sucesso!');
-            } catch (error) {
-                // Cota do localStorage estourada (fundo pode ter alguns MB) — tenta sem o fundo
-                try {
-                    localStorage.setItem('flowAnimatorData', JSON.stringify(this._buildProjectData(false)));
-                    this.showTooltip('⚠️ Salvo sem o fundo (cota do navegador excedida) — use Exportar JSON para o projeto completo.');
-                } catch (retryError) {
-                    this.handleError('Erro ao salvar', retryError);
-                    this.showTooltip('Erro ao salvar dados!');
-                }
-            }
-        };
-
-        FlowAnimator.prototype.loadFromLocalStorage = function() {
-            try {
-                const dataStr = localStorage.getItem('flowAnimatorData');
-                if (!dataStr) {
-                    this.showTooltip('Nenhum dado salvo encontrado!');
-                    return;
-                }
-                
-                const data = JSON.parse(dataStr);
-                this.loadDataFromObject(data);
-                
-                this.showTooltip('Dados carregados com sucesso!');
-            } catch (error) {
-                this.handleError('Erro ao carregar', error);
-                this.showTooltip('Erro ao carregar dados!');
-            }
-        };
-
-        FlowAnimator.prototype.exportJSON = function() {
-            try {
-                const data = this._buildProjectData(true);
-                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                this._downloadBlob(blob, `flow_animation_${Date.now()}.json`);
-                this.showTooltip('Arquivo JSON exportado!');
-            } catch (error) {
-                this.handleError('Erro ao exportar JSON', error);
-                this.showTooltip('Erro ao exportar arquivo!');
-            }
-        };
-
-        FlowAnimator.prototype.importJSON = function(file) {
-            const self = this;
-            const reader = new FileReader();
-            
-            reader.onload = function(e) {
-                try {
-                    const data = JSON.parse(e.target.result);
-                    
-                    if (!data.actions && !data.comments) {
-                        throw new Error('Arquivo JSON inválido - estrutura incorreta');
-                    }
-                    
-                    self.loadDataFromObject(data);
-                    self.showTooltip('Arquivo importado com sucesso!');
-                    
-                } catch (error) {
-                    self.handleError('Erro ao importar JSON', error);
-                    self.showTooltip('Erro ao importar arquivo!');
-                }
-            };
-            
-            reader.onerror = function() {
-                self.handleError('Erro ao ler arquivo JSON', new Error('Falha na leitura do arquivo'));
-                self.showTooltip('Erro ao ler arquivo!');
-            };
-            
-            reader.readAsText(file);
-        };
-
-        FlowAnimator.prototype.loadDataFromObject = function(data) {
-            // Validar e carregar dados
-            this.actions = Array.isArray(data.actions) ? data.actions : [];
-            this.comments = Array.isArray(data.comments) ? data.comments : [];
-            
-            if (data.settings) {
-                this.animationSpeed = data.settings.animationSpeed || 1;
-                this.totalAnimationTime = data.settings.totalAnimationTime || 10;
-                this.persistPaths = data.settings.persistPaths !== false;
-                this.flowColor = data.settings.flowColor || '#4a90e2';
-                this.lineWidth = data.settings.lineWidth || 3;
-                this.eraseSize = data.settings.eraseSize || 20;
-                
-                // Novas propriedades de comentários (com compatibilidade)
-                this.commentTextColor = data.settings.commentTextColor || '#333333';
-                this.commentBgColor = data.settings.commentBgColor || '#ffffff';
-                this.commentBorderColor = data.settings.commentBorderColor || data.settings.commentColor || '#f39c12';
-                this.commentFontFamily = data.settings.commentFontFamily || 'Arial';
-                this.commentFontSize = data.settings.commentFontSize || 16;
-                this.commentOpacity = data.settings.commentOpacity !== undefined ? data.settings.commentOpacity : 0.9;
-                
-                // Ajustar canvas se necessário
-                if (data.settings.canvasWidth && data.settings.canvasHeight) {
-                    this._syncCanvasSizes(data.settings.canvasWidth, data.settings.canvasHeight);
-                    this.updateCanvasDisplay();
-                }
-
-                // Atualizar UI
-                this.updateUIFromSettings();
-            }
-
-            // Restaurar fundo embutido (projetos v1.2+). Arquivos antigos sem `background`
-            // mantêm o fundo atualmente carregado (comportamento anterior).
-            if (data.background && data.background.dataUrl) {
-                const img = new Image();
-                img.onload = () => {
-                    const bg = document.createElement('canvas');
-                    bg.width = this.canvas.width;
-                    bg.height = this.canvas.height;
-                    bg.getContext('2d').drawImage(img, 0, 0, bg.width, bg.height);
-                    this._setBackgroundFromImageData(bg.getContext('2d').getImageData(0, 0, bg.width, bg.height));
-                    this.redrawMainCanvas();
-                    document.getElementById('fileName').textContent = 'Fundo restaurado do projeto';
-                };
-                img.src = data.background.dataUrl;
-            }
-
-            this.rebuildDrawingCanvas();
-            this.redrawMainCanvas();
-            this.timeline.refresh();
-            this.updateInfo();
-        };
-
-        FlowAnimator.prototype.updateUIFromSettings = function() {
-            document.getElementById('animSpeed').value = this.animationSpeed;
-            document.getElementById('speedDisplay').textContent = this.animationSpeed + 'x';
-            document.getElementById('totalDuration').value = this.totalAnimationTime;
-            document.getElementById('persistPaths').checked = this.persistPaths;
-            document.getElementById('flowColor').value = this.flowColor;
-            document.getElementById('lineWidth').value = this.lineWidth;
-            document.getElementById('lineWidthDisplay').textContent = this.lineWidth + 'px';
-            document.getElementById('eraseSize').value = this.eraseSize;
-            document.getElementById('eraseSizeDisplay').textContent = this.eraseSize + 'px';
-            
-            // Atualizar controles de comentários
-            document.getElementById('commentTextColor').value = this.commentTextColor;
-            document.getElementById('commentBgColor').value = this.commentBgColor;
-            document.getElementById('commentBorderColor').value = this.commentBorderColor;
-            document.getElementById('commentFontFamily').value = this.commentFontFamily;
-            document.getElementById('commentFontSize').value = this.commentFontSize;
-            document.getElementById('fontSizeDisplay').textContent = this.commentFontSize + 'px';
-            document.getElementById('commentOpacity').value = this.commentOpacity;
-            document.getElementById('opacityDisplay').textContent = Math.round(this.commentOpacity * 100) + '%';
-        };
-
-        // Error Handling
-        FlowAnimator.prototype.handleError = function(context, error) {
-            this.lastError = { context: context, error: error, timestamp: new Date() };
-            this.errorCount++;
-            
-            console.error(`[FlowAnimator] ${context}:`, error);
-            
-            // Log para debug
-            if (this.errorCount < 5) { // Evitar spam de erros
-                const errorInfo = {
-                    context: context,
-                    message: error.message || 'Erro desconhecido',
-                    stack: error.stack,
-                    timestamp: new Date().toISOString(),
-                    userAgent: navigator.userAgent,
-                    actions: this.actions.length,
-                    comments: this.comments.length
-                };
-                
-                console.log('Error details:', errorInfo);
-            }
-            
-            // Atualizar status bar com erro
-            document.getElementById('statusInfo').textContent = `Erro: ${context}`;
-            setTimeout(() => {
-                document.getElementById('statusInfo').textContent = 
-                    'Shift = linha snapped 45° | Alt = linha livre | Espaço = Play/Pause | D/E/C = modos | Ctrl+Z = Desfazer';
-            }, 5000);
-        };
-
-        // Tooltip Function
-        FlowAnimator.prototype.showTooltip = function(message) {
-            const tooltip = document.getElementById('tooltip');
-            if (!tooltip) return;
-            tooltip.textContent = message;
-            tooltip.style.display = 'block';
-
-            // Rodapé centralizado da área do canvas (antes ficava no centro, cobrindo o desenho)
-            const vp = document.querySelector('.canvas-viewport');
-            if (vp) {
-                const r = vp.getBoundingClientRect();
-                tooltip.style.left = (r.left + r.width / 2) + 'px';
-                tooltip.style.top = Math.max(r.top + 8, r.bottom - tooltip.offsetHeight - 16) + 'px';
-            }
-
-            // Um timer por vez: antes o timer de um aviso anterior escondia o novo antes da hora
-            clearTimeout(this._tooltipTimer);
-            this._tooltipTimer = setTimeout(() => {
-                tooltip.style.display = 'none';
-            }, 3000);
-        };
-
-        FlowAnimator.prototype.optimizePerformance = function() {
-            if (this.isPlaying) return; // nunca mutar pontos durante animação
-            this.actions.forEach(action => {
-                if (action.points && action.points.length > 1000) {
-                    const step = Math.ceil(action.points.length / 1000);
-                    const optimizedPoints = [];
-                    for (let i = 0; i < action.points.length; i += step) {
-                        optimizedPoints.push(action.points[i]);
-                    }
-                    const last = action.points[action.points.length - 1];
-                    if (optimizedPoints[optimizedPoints.length - 1] !== last) {
-                        optimizedPoints.push(last);
-                    }
-                    action.points = optimizedPoints;
-                }
-            });
-        };
+            lines.push(line);
+        }
+        let width = 0;
+        for (const l of lines) width = Math.max(width, ctx.measureText(l).width);
+        ctx.restore();
+        comment._layout = { lines, width, lineHeight: Math.round(fontSize * 1.3) };
+        comment._layoutKey = key;
+    }
+    return comment._layout;
+};
+
+// Caixa (centrada em x,y) ocupada pelo comentário no canvas
+FlowAnimator.prototype._getCommentBox = function(comment) {
+    const layout = this._getCommentLayout(comment);
+    const fontSize = comment.fontSize || this.commentFontSize;
+    if (comment.kind === 'badge') {
+        const d = Math.max(layout.width + fontSize * 0.9, fontSize * 1.9);
+        return { x: comment.x - d / 2, y: comment.y - d / 2, w: d, h: d, layout };
+    }
+    const pad = FlowAnimator.COMMENT_PADDING * Math.max(0.75, fontSize / 24);
+    const w = layout.width + pad * 2;
+    const h = layout.lines.length * layout.lineHeight + pad * 1.6;
+    return { x: comment.x - w / 2, y: comment.y - h / 2, w, h, layout };
+};
+
+FlowAnimator.prototype.getCommentAt = function(x, y) {
+    if (!this._isTypeVisible('comment')) return null;
+    for (let i = this.comments.length - 1; i >= 0; i--) {
+        const c = this.comments[i];
+        const b = this._getCommentBox(c);
+        if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return c;
+    }
+    return null;
+};
+
+// ─── Erros / avisos ────────────────────────────────────────────────────────
+
+FlowAnimator.prototype.handleError = function(context, error) {
+    this.lastError = { context, error, timestamp: new Date() };
+    this.errorCount++;
+    console.error(`[FlowAnimator] ${context}:`, error);
+};
+
+FlowAnimator.prototype.showTooltip = function(message) {
+    Toast.show(message);
+};
+
+FlowAnimator.prototype.hexToRgba = function(hex, alpha) {
+    return Util.hexToRgba(hex, alpha);
+};
+
+// Simplifica traços muito longos (Ramer–Douglas–Peucker, preservando forma e tempo).
+// Reatribui `points` — nunca muta in-place (ver saveUndoState).
+FlowAnimator.prototype.optimizePerformance = function() {
+    if (this.isPlaying || this.isDrawing || this.isExporting) return;
+    let changed = false;
+    for (const action of this.actions) {
+        if (action.points && action.points.length > 1500 && !action.shape) {
+            action.points = Geometry.simplify(action.points, 0.6);
+            changed = true;
+        }
+    }
+    if (changed) this.invalidateRenderCaches();
+};
