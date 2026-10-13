@@ -200,3 +200,43 @@ window.addEventListener('beforeunload', (e) => {
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden' && flowAnimator && flowAnimator._autosave) flowAnimator._autosave.flush();
 });
+
+// PWA: instalável e offline quando publicado por http(s) (GitHub Pages). Via file:// não há
+// manifest nem service worker — o <link rel="manifest"> é injetado aqui (e não no HTML) porque
+// o Chromium registra erro de CORS no console ao tentar ler um manifest de file://.
+const Pwa = {
+    supported() { return location.protocol === 'https:' || location.protocol === 'http:'; },
+    init() {
+        if (!this.supported()) return;
+        if (!document.querySelector('link[rel="manifest"]')) {
+            const link = document.createElement('link');
+            link.rel = 'manifest';
+            link.href = 'manifest.webmanifest';
+            document.head.appendChild(link);
+        }
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Service worker não registrado:', e));
+            });
+        }
+        // Arquivos abertos pelo sistema operacional no app instalado ("Abrir com…", file_handlers)
+        if ('launchQueue' in window) {
+            window.launchQueue.setConsumer(async (params) => {
+                if (!params.files || !params.files.length) return;
+                const ready = () => new Promise((resolve) => {
+                    if (flowAnimator) resolve();
+                    else document.addEventListener('DOMContentLoaded', () => resolve(), { once: true });
+                });
+                await ready();
+                for (const handle of params.files) {
+                    try {
+                        await flowAnimator.loadFile(await handle.getFile());
+                    } catch (e) {
+                        flowAnimator.handleError(t('errLoad'), e);
+                    }
+                }
+            });
+        }
+    }
+};
+Pwa.init();

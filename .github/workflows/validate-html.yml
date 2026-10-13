@@ -38,6 +38,9 @@ jobs:
       - name: Check duplicated FlowAnimator methods
         run: node scripts/check-duplicates.js
 
+      - name: Check calls to undefined methods
+        run: node scripts/check-methods.js
+
       - name: Check JS syntax of extracted modules
         run: |
           node -e "

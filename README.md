@@ -4,6 +4,8 @@ Ferramenta client-side (roda inteiramente no navegador, sem servidor e sem insta
 
 Abra **[`main.html`](./main.html)** num navegador moderno para usar — funciona até offline e direto do disco (`file://`).
 
+Na versão publicada dá para **instalar como app** (PWA: ícone "Instalar" na barra de endereço do Chrome/Edge, ou "Adicionar à Tela de Início" no celular). Instalado, ele abre em janela própria, funciona **offline** depois da primeira visita e pode ser escolhido no "Abrir com…" do sistema para PDFs, imagens e projetos `.json`.
+
 🔗 **Demo publicada:** https://brunoalmeida87.github.io/pdf_flow_animator/
 
 ## Funcionalidades
@@ -87,7 +89,8 @@ Sem bundler nem build step: HTML/CSS/JS em arquivos separados, carregados por `<
 | `js/fa-project.js` | Formato v2, validação (`ProjectSchema`), autosave, projetos, exemplo. |
 | `js/fa-export.js` | Vídeo (WebCodecs/MediaRecorder), GIF, frames, PNG, legendas. |
 | `js/inspector.js` | `class Inspector` — painel de propriedades contextual. |
-| `js/main.js` | Inicialização e ligação da interface. |
+| `js/main.js` | Inicialização e ligação da interface; registro da PWA. |
+| `manifest.webmanifest` / `sw.js` / `icons/` | PWA: manifest (ícones, *file handlers*) e service worker (cache offline, network-first). Só são usados quando o app é servido por http(s). |
 
 A ordem de carregamento está no fim de `main.html` (`i18n` → `util` → … → `inspector` → `main`). Detalhes de comportamento e invariantes estão em [CLAUDE.md](./CLAUDE.md).
 
@@ -127,7 +130,7 @@ Projetos v1 (`{ actions, comments, settings, background }`) são migrados automa
 
 ## Testes
 
-Suíte [Playwright](https://playwright.dev/) com ~70 testes em `tests/`: desenho, ferramentas, caneta/toque, seleção, timeline, cenas, câmera, áudio/narração (microfone falso do Chromium), exportação (vídeo, GIF, frames, legendas), autosave/restauração, validação de import, i18n, tema, layout e regressões de bugs/segurança (XSS via JSON, CVE-2024-4367). Veja [Contribuindo](#contribuindo).
+Suíte [Playwright](https://playwright.dev/) com ~75 testes em `tests/`: desenho, ferramentas, caneta/toque, seleção, timeline, cenas, câmera, áudio/narração (microfone falso do Chromium), exportação (vídeo, GIF, frames, legendas), autosave/restauração, validação de import, i18n, tema, layout, PWA (instalável e offline, servida por um servidor HTTP local) e regressões de bugs/segurança (XSS via JSON, CVE-2024-4367). Veja [Contribuindo](#contribuindo).
 
 ## Limitações conhecidas
 

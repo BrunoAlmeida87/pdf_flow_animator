@@ -14,7 +14,7 @@ const appGlobals = {
     ZipBuilder: 'readonly', GifEncoder: 'readonly', ProjectStore: 'readonly', AudioEngine: 'readonly', Geometry: 'readonly',
     // timeline-pro.js / flow-animator.js (+ fa-*.js) / inspector.js / main.js
     TimelinePro: 'readonly', FlowAnimator: 'readonly', ProjectSchema: 'readonly', Inspector: 'readonly',
-    flowAnimator: 'writable', Theme: 'readonly',
+    flowAnimator: 'writable', Theme: 'readonly', Pwa: 'readonly',
     // vendor
     pdfjsLib: 'readonly', PerfectFreehand: 'readonly', Mediabunny: 'readonly'
 };
@@ -38,6 +38,20 @@ module.exports = [
             'no-constant-condition': ['error', { checkLoops: false }],
             'no-fallthrough': 'error',
             'no-useless-escape': 'warn',
+            'prefer-const': 'warn'
+        }
+    },
+    {
+        // Service worker (registrado só via http(s)): roda num escopo de worker, não de janela
+        files: ['sw.js'],
+        languageOptions: {
+            ecmaVersion: 2022,
+            sourceType: 'script',
+            globals: { ...globals.serviceworker }
+        },
+        rules: {
+            'no-undef': 'error',
+            'no-unused-vars': ['warn', { args: 'none', caughtErrors: 'none' }],
             'prefer-const': 'warn'
         }
     },

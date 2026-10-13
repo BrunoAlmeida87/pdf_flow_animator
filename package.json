@@ -5,10 +5,11 @@
   "description": "Ferramenta client-side para animar fluxos desenhados sobre PDFs/imagens. Ver main.html — este package.json existe só para as ferramentas de desenvolvimento (testes, lint), não é necessário para usar o app.",
   "scripts": {
     "test": "playwright test",
-    "lint": "eslint . && node scripts/check-duplicates.js && html-validate main.html index.html",
+    "lint": "eslint . && node scripts/check-duplicates.js && node scripts/check-methods.js && html-validate main.html index.html",
     "lint:js": "eslint .",
     "lint:html": "html-validate main.html index.html",
-    "check:duplicates": "node scripts/check-duplicates.js"
+    "check:duplicates": "node scripts/check-duplicates.js",
+    "check:methods": "node scripts/check-methods.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",

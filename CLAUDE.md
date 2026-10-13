@@ -26,6 +26,7 @@ O app é modular, mas **sem bundler/build step** — tudo é carregado via `<lin
 | `vendor/pdfjs/` | PDF.js 3.11.174 (`pdf.min.js`, worker, cmaps). |
 | `vendor/perfect-freehand/` | Traço com pressão (`window.PerfectFreehand`), carregado no `<head>`. |
 | `vendor/mediabunny/` | Muxer MP4/WebM (`window.Mediabunny`), carregado **sob demanda** via `Util.loadScript` na exportação. |
+| `manifest.webmanifest`, `sw.js`, `icons/` | PWA. `Pwa.init()` (fim de `js/main.js`) só age em http(s): injeta o `<link rel="manifest">` (no HTML estático ele gera erro de CORS no console em `file://`), registra o `sw.js` e consome o `launchQueue` (*file handlers* → `loadFile`). |
 
 **Ordem de carregamento importa** (fim de `main.html`): `i18n` → `util` → `modal` → `ui` → `zip` → `gif` → `storage` → `audio` → `geometry` → `timeline-pro` → `flow-animator` → `fa-*` → `inspector` → `main`. O construtor do `FlowAnimator` chama `bindEvents()` (fa-input) e `new TimelinePro(this)`; ele só roda no `DOMContentLoaded`, quando todos os arquivos já carregaram.
 
@@ -73,6 +74,8 @@ Ao propor mudanças, prefira edições cirúrgicas no arquivo relevante.
 ## Cuidados ao editar
 
 - **Não reintroduza definições duplicadas de método.** No `FlowAnimator.prototype` (espalhado por vários arquivos) ou numa `class`, a segunda definição sobrescreve a primeira em silêncio — o histórico já teve dois casos. `node scripts/check-duplicates.js` (no CI) pega o prototype; o ESLint (`no-dupe-class-members`) pega as classes.
-- Antes de commitar: `npm run lint` (ESLint + duplicatas + `html-validate`) e `npx playwright test` (veja [CONTRIBUTING.md](./CONTRIBUTING.md)).
+- **Chamadas a métodos inexistentes** (ex.: o antigo `this.hideCursorPreviews()`, que só estourava em runtime) são pegas por `node scripts/check-methods.js` (no CI): confere `this.X(` no FlowAnimator e nas classes, e `fa.X(`/`this.animator.X(`/`.timeline.X(`/`.inspector.X(`/`this.audio.X(` contra os membros definidos ou atribuídos. Se ele reclamar de algo legítimo (ex.: método criado dinamicamente), atribua-o explicitamente em vez de enfraquecer o script.
+- **Service worker**: arquivo novo carregado pelo app (`<script>`, `<link>`, `Util.loadScript`, ícone) entra na lista `PRECACHE` de `sw.js` — `tests/pwa.spec.js` falha se faltar. A estratégia é network-first (online sempre pega a versão publicada); incremente `VERSION` em `sw.js` a cada release para limpar o cache antigo.
+- Antes de commitar: `npm run lint` (ESLint + duplicatas + métodos inexistentes + `html-validate`) e `npx playwright test` (veja [CONTRIBUTING.md](./CONTRIBUTING.md)).
 - Novo global compartilhado entre arquivos? Declare-o em `eslint.config.js` (`appGlobals`), senão o `no-undef` falha.
 - Teste manualmente no navegador também: importar PDF/imagem, desenhar com cada ferramenta, selecionar/mover, gravar (com e sem microfone), reproduzir, desfazer/refazer, trocar idioma e tema, e exportar vídeo/GIF.
